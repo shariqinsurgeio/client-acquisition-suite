@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Recovery
+
+Check `PROGRESS.md` for detailed progress tracking and next steps when resuming work.
+
 ## Project Overview
 
 Client Acquisition Suite is a "Puppet Master" distributed system for a 2-person GenAI agency to aggregate job leads from Upwork, LinkedIn, Fiverr, and Freelancer. The user controls everything from a web dashboard while a browser extension acts as the "Hands" executing actions in the local browser context.
