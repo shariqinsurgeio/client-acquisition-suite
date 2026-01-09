@@ -1,0 +1,51 @@
+# Phase 1 MVP Walkthrough
+
+## Summary
+I have successfully implemented the "Puppet Master" architecture for the Agency OS. The system consists of a centralized Next.js "Brain" and a Plasmo "Hands" extension, bridged by a real-time Socket.io connection.
+
+## Components Implemented
+
+### 1. The Brain (Webapp)
+- **Location**: `/apps/web`
+- **Stack**: Next.js 14, standard Tailwind CSS, Socket.io.
+- **Server**: Custom `server.js` handles both Next.js SSR and the Socket.io WebSocket server on port 3000.
+- **Dashboard UI**:
+    - **Header**: Displays "Agency OS" and the live "Extension Status" (Online/Offline).
+    - **Job Feed**: Mock job listings from Upwork, LinkedIn, etc.
+    - **Workbench**: A proposal drafting area.
+
+### 2. The Hands (Extension)
+- **Location**: `/apps/extension`
+- **Stack**: Plasmo Framework (React).
+- **Communication**: `background.ts` connects to `http://localhost:3000` via Socket.io.
+- **UI**: A Popup showing connection status and a "Send Ping" button.
+
+## How to Run
+
+1.  **Start the Brain**:
+    ```bash
+    npm run dev:web
+    # OR
+    cd apps/web && npm run dev
+    ```
+    Access the dashboard at [http://localhost:3000](http://localhost:3000).
+
+2.  **Start the Hands**:
+    ```bash
+    npm run dev:ext
+    # OR
+    cd apps/extension && npm run dev
+    ```
+    Load the extension in Chrome via `chrome://extensions` -> "Load Unpacked" -> Select `/apps/extension/build/chrome-mv3-dev`.
+
+## Verification Results
+- **Builds**: Both `apps/web` and `apps/extension` built successfully.
+- **Architecture**:
+    - `page.tsx` structure verified.
+    - `server.js` integration verified.
+    - `background.ts` and `popup.tsx` implementation verified.
+
+## Next Steps
+- Implement real database schema in `packages/database`.
+- Connect "Live Job Feed" to real database data.
+- Implement scraping logic in Extension.

@@ -1,0 +1,161 @@
+# Intelligent Scraper Architecture
+
+## Project Vision Alignment
+> "God Mode" Command Center for a GenAI Agency - aggregate leads from Upwork, LinkedIn, Fiverr, Freelancer. The Extension ("Hands") scrapes data; the Webapp ("Brain") stores, ranks, and enables proposal generation.
+
+## Current Issues
+1. **Dashboard not showing new jobs** - JOB_UPDATE only emits for NEW jobs. Duplicates are silently updated, so the 2 jobs "found" were already in DB - nothing to broadcast
+2. **Only 2 jobs scraped** - Need better scroll + wait logic for Upwork's lazy-loading
+3. **No feedback on duplicates** - User has no idea how many are new vs existing
+4. **No multi-page** - Need pagination for larger scrapes
+
+---
+
+## Root Cause Analysis
+When scraping:
+- Extension finds 2 jobs → emits DATA_INGEST
+- Server checks: both URLs exist → updates them (isNew=false)
+- JOB_UPDATE only fires when `isNew=true`
+- Dashboard shows nothing new
+
+**Fix:** Show scrape summary with counts (X new, Y updated)
+
+## Phase 3.5: Intelligent Scraper (This Sprint)
+
+### Comprehensive Scraping Strategy
+
+#### A. Exhaustive Job Collection
+| Step | How | Why |
+|------|-----|-----|
+| 1. Use pre-filtered URLs | `upwork.com/nx/find-work/best-matches?q=AI+agent` | Start with relevant search |
+| 2. Infinite scroll loop | Scroll → Wait 2s → Check new jobs → Repeat until no new | Get ALL loaded jobs |
+| 3. Pagination detection | Find "Load More" or page numbers | Some platforms paginate |
+| 4. Deduplication | Check URL in DB before insert | No duplicates |
+
+#### B. Relevance Filtering (Future: Phase 4)
+- **Server-side scoring** using job description + agency skills
+- `fitScore: 0-100` already in schema
+- RAG-based matching (LLM compares job to agency profile)
+
+#### C. Search Filters (Upwork-specific)
+Build targeted URLs:
+```
+/nx/find-work/best-matches?q=AI+agent+development
+/nx/find-work/best-matches?category=ai-ml
+/nx/find-work/best-matches?hourly_rate=50-
+```
+
+### 1. Fix Dashboard Real-time Refresh
+**Problem:** `JOB_UPDATE` emits but feed doesn't re-fetch  
+**Fix:** JobFeed.tsx must prepend new jobs to state, not refetch
+
+#### [MODIFY] [apps/web/components/JobFeed.tsx](file:///Users/shariqqkhann/ai-coding-projects/Client%20Acquisition%20Suite/apps/web/components/JobFeed.tsx)
+- Socket `JOB_UPDATE` handler correctly prepends to `jobs` state
+- Add visual highlight for "new" jobs
+
+---
+
+### 2. Scrape Orchestration System
+**New architecture:** Server sends structured scrape configs, extension executes multi-step flows
+
+#### [NEW] `apps/extension/lib/scraper.ts`
+```typescript
+interface ScrapeConfig {
+  platform: string;
+  steps: ScrapeStep[];
+}
+
+interface ScrapeStep {
+  action: "NAVIGATE" | "SCROLL" | "WAIT" | "EXTRACT" | "CLICK";
+  selector?: string;
+  value?: string;
+  delay?: number;
+}
+```
+
+#### [MODIFY] [apps/extension/background.ts](file:///Users/shariqqkhann/ai-coding-projects/Client%20Acquisition%20Suite/apps/extension/background.ts)
+- Refactor CMD_EXECUTE to use step-based executor
+- Support pagination: detect "Load More" or "Next Page"
+
+---
+
+### 3. Platform Configurations
+Move from simple selectors to full scrape blueprints:
+
+#### Upwork Config
+```json
+{
+  "platform": "UPWORK",
+  "startUrl": "https://www.upwork.com/nx/find-work/best-matches",
+  "steps": [
+    { "action": "WAIT", "delay": 3000 },
+    { "action": "SCROLL", "value": "bottom" },
+    { "action": "WAIT", "delay": 2000 },
+    { "action": "EXTRACT", "selector": "..." }
+  ],
+  "pagination": {
+    "type": "INFINITE_SCROLL",
+    "maxPages": 3
+  }
+}
+```
+
+---
+
+### 4. chrome.debugger (Puppeteer-in-Browser)
+Per master context - use Chrome DevTools Protocol inside the extension for stealth automation.
+
+#### [NEW] `apps/extension/lib/puppeteer-lite.ts`
+```typescript
+// Attach debugger to tab
+export async function attachDebugger(tabId: number) {
+  await chrome.debugger.attach({ tabId }, "1.3");
+}
+
+// Human-like typing using CDP
+export async function humanType(tabId: number, text: string) {
+  for (const char of text) {
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+      type: "keyDown", text: char
+    });
+    await humanDelay(50, 150); // Random delay between keystrokes
+  }
+}
+
+// Scroll with CDP
+export async function scrollPage(tabId: number) {
+  await chrome.debugger.sendCommand({ tabId }, "Input.synthesizeScrollGesture", {
+    x: 100, y: 100, yDistance: -500
+  });
+}
+```
+
+**Why chrome.debugger vs traditional Puppeteer:**
+- Uses YOUR real browser session (logged-in cookies)
+- No headless detection
+- Simulates real key events (anti-bot bypass)
+- Runs inside extension, no separate Node process
+
+---
+
+### 5. Human Jitter Delays
+```typescript
+export const humanDelay = (min = 1000, max = 3000) => 
+  new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
+```
+
+---
+
+## Verification
+1. Click "Scrape Upwork" → Loads 3 pages → ~30 jobs
+2. Dashboard updates in real-time as each job arrives
+3. New jobs highlighted with animation
+4. Duplicates silently updated (no errors)
+
+---
+
+## Implementation Order
+1. ✅ Fix JobFeed refresh (critical bug)
+2. Multi-step scraper with scroll loops
+3. Pagination support
+4. Human jitter delays
