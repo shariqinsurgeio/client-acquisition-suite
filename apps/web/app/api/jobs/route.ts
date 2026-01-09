@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 
@@ -14,13 +15,18 @@ const CreateJobSchema = z.object({
 // GET /api/jobs - Fetch all jobs with optional filters
 export async function GET(request: Request) {
     try {
+        const { userId } = await auth();
+        if (!userId) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const { searchParams } = new URL(request.url);
         const status = searchParams.get("status");
         const platform = searchParams.get("platform");
         const limit = parseInt(searchParams.get("limit") || "100", 10);
         const offset = parseInt(searchParams.get("offset") || "0", 10);
 
-        const where: Record<string, unknown> = {};
+        const where: Record<string, unknown> = { userId };
         if (status && status !== "ALL") {
             where.status = status;
         }
@@ -45,6 +51,11 @@ export async function GET(request: Request) {
 // POST /api/jobs - Create a new job
 export async function POST(request: Request) {
     try {
+        const { userId } = await auth();
+        if (!userId) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const body = await request.json();
 
         // Validate input
@@ -58,9 +69,9 @@ export async function POST(request: Request) {
 
         const data = result.data;
 
-        // Check for duplicate URL
+        // Check for duplicate URL for this user
         const existing = await prisma.job.findUnique({
-            where: { url: data.url },
+            where: { userId_url: { userId, url: data.url } },
         });
 
         if (existing) {
@@ -72,6 +83,7 @@ export async function POST(request: Request) {
 
         const job = await prisma.job.create({
             data: {
+                userId,
                 platform: data.platform,
                 title: data.title,
                 description: data.description,

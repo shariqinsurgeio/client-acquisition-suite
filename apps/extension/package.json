@@ -31,7 +31,8 @@
       "scripting",
       "activeTab",
       "debugger",
-      "alarms"
+      "alarms",
+      "storage"
     ],
     "host_permissions": [
       "https://*.upwork.com/*",
@@ -40,6 +41,13 @@
       "https://*.freelancer.com/*",
       "http://localhost/*",
       "http://127.0.0.1/*"
-    ]
+    ],
+    "externally_connectable": {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*",
+        "https://*.onrender.com/*"
+      ]
+    }
   }
 }

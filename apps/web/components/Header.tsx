@@ -1,6 +1,7 @@
 "use client";
 
 import { Activity, Wifi, WifiOff, RefreshCw, Loader2 } from "lucide-react";
+import { UserButton } from "@clerk/nextjs";
 import { useSocket } from "@/context/SocketContext";
 import { useState, useEffect } from "react";
 
@@ -131,6 +132,15 @@ export const Header = () => {
                     )}
                     Extension: {extensionStatus}
                 </div>
+
+                {/* User Profile */}
+                <UserButton
+                    appearance={{
+                        elements: {
+                            avatarBox: "w-9 h-9",
+                        },
+                    }}
+                />
             </div>
         </header>
     );

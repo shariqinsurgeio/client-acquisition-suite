@@ -3,23 +3,34 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
-}
-
-model PlatformSelector {
-  id        String @id @default(uuid())
-  platform  String
-  selectors String
 }
 
 model Job {
   id          String   @id @default(uuid())
+  userId      String   // Clerk user ID
   platform    String
   title       String
-  description String
-  url         String   @unique
-  status      String
+  description String   @db.Text
+  url         String
+  status      String   @default("NEW")
   fitScore    Int?
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, url])
+  @@index([userId])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+}
+
+model PlatformSelector {
+  id        String @id @default(uuid())
+  userId    String // Clerk user ID
+  platform  String
+  selectors String @db.Text
+
+  @@unique([userId, platform])
+  @@index([userId])
 }

@@ -9,48 +9,161 @@ const KEEPALIVE_ALARM = "keepAlive";
 const KEEPALIVE_INTERVAL_MINUTES = 0.4; // ~24 seconds to stay under 30s service worker limit
 const MAX_SCRAPE_ITERATIONS = 15;
 const MAX_JOBS_PER_SCRAPE = 50;
+const AUTH_TOKEN_KEY = "agencyos_auth_token";
 
-console.log("[AgencyOS] Initializing socket connection to:", SOCKET_URL);
+console.log("[AgencyOS] Initializing extension...");
+
+// =============================================================================
+// AUTH TOKEN MANAGEMENT
+// =============================================================================
+
+let currentAuthToken: string | null = null;
+
+async function getStoredToken(): Promise<string | null> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([AUTH_TOKEN_KEY], (result) => {
+      resolve(result[AUTH_TOKEN_KEY] || null);
+    });
+  });
+}
+
+async function storeToken(token: string): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [AUTH_TOKEN_KEY]: token }, resolve);
+  });
+}
+
+async function clearToken(): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.remove([AUTH_TOKEN_KEY], resolve);
+  });
+}
 
 // =============================================================================
 // SOCKET CONNECTION
 // =============================================================================
 
-const socket: Socket = io(SOCKET_URL, {
-  reconnection: true,
-  reconnectionAttempts: 20,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 10000,
-  transports: ["websocket"],
-  autoConnect: true,
-});
-
+let socket: Socket | null = null;
 let lastError = "";
 let isConnecting = false;
 
-socket.on("connect", () => {
-  console.log("[AgencyOS] Socket connected:", socket.id);
-  lastError = "";
-  isConnecting = false;
-  socket.emit("EXTENSION_CONNECT", { extensionId: chrome.runtime.id });
+async function initializeSocket() {
+  // Get stored token
+  currentAuthToken = await getStoredToken();
 
-  // Set up keepalive alarm
-  setupKeepalive();
-});
+  if (!currentAuthToken) {
+    console.log("[AgencyOS] No auth token found, waiting for dashboard authorization");
+    return;
+  }
 
-socket.on("connect_error", (err) => {
-  console.error("[AgencyOS] Socket connection error:", err.message);
-  lastError = err.message;
-  isConnecting = false;
-});
+  connectSocket(currentAuthToken);
+}
 
-socket.on("disconnect", (reason) => {
-  console.log("[AgencyOS] Socket disconnected:", reason);
-  lastError = `Disconnected: ${reason}`;
-});
+function connectSocket(token: string) {
+  // Disconnect existing socket if any
+  if (socket) {
+    socket.disconnect();
+  }
 
-socket.on("STATUS_UPDATE", (data) => {
-  console.log("[AgencyOS] Status update:", data);
+  console.log("[AgencyOS] Connecting to:", SOCKET_URL);
+
+  socket = io(SOCKET_URL, {
+    auth: { token },
+    reconnection: true,
+    reconnectionAttempts: 20,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000,
+    transports: ["websocket"],
+    autoConnect: true,
+  });
+
+  socket.on("connect", () => {
+    console.log("[AgencyOS] Socket connected:", socket!.id);
+    lastError = "";
+    isConnecting = false;
+    socket!.emit("EXTENSION_CONNECT", { extensionId: chrome.runtime.id });
+
+    // Set up keepalive alarm
+    setupKeepalive();
+  });
+
+  socket.on("connect_error", async (err) => {
+    console.error("[AgencyOS] Socket connection error:", err.message);
+    lastError = err.message;
+    isConnecting = false;
+
+    // If authentication error, clear stored token
+    if (err.message.includes("Authentication") || err.message.includes("token") || err.message.includes("Invalid")) {
+      console.log("[AgencyOS] Auth error, clearing stored token");
+      await clearToken();
+      currentAuthToken = null;
+    }
+  });
+
+  socket.on("disconnect", (reason) => {
+    console.log("[AgencyOS] Socket disconnected:", reason);
+    lastError = `Disconnected: ${reason}`;
+  });
+
+  socket.on("STATUS_UPDATE", (data) => {
+    console.log("[AgencyOS] Status update:", data);
+  });
+
+  // Re-attach command handlers
+  attachSocketEventHandlers();
+}
+
+// =============================================================================
+// EXTERNAL MESSAGE HANDLER (From Web Dashboard)
+// =============================================================================
+
+chrome.runtime.onMessageExternal.addListener(async (message, sender, sendResponse) => {
+  console.log("[AgencyOS] External message from:", sender.url, message);
+
+  if (message.type === "AUTH_TOKEN") {
+    const { token } = message;
+
+    if (token) {
+      console.log("[AgencyOS] Received auth token from dashboard");
+      await storeToken(token);
+      currentAuthToken = token;
+
+      // Connect or reconnect with new token
+      connectSocket(token);
+
+      sendResponse({ success: true, status: "Token stored and connected" });
+    } else {
+      sendResponse({ success: false, error: "No token provided" });
+    }
+    return true;
+  }
+
+  if (message.type === "LOGOUT") {
+    console.log("[AgencyOS] Received logout from dashboard");
+    await clearToken();
+    currentAuthToken = null;
+
+    if (socket) {
+      socket.disconnect();
+      socket = null;
+    }
+
+    sendResponse({ success: true, status: "Logged out" });
+    return true;
+  }
+
+  if (message.type === "GET_STATUS") {
+    sendResponse({
+      status: socket?.connected ? "CONNECTED" : "DISCONNECTED",
+      authenticated: !!currentAuthToken,
+      error: lastError,
+      socketId: socket?.id,
+    });
+    return true;
+  }
+
+  sendResponse({ error: "Unknown message type" });
+  return true;
 });
 
 // =============================================================================
@@ -64,31 +177,50 @@ function setupKeepalive() {
   console.log("[AgencyOS] Keepalive alarm set");
 }
 
-chrome.alarms.onAlarm.addListener((alarm) => {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
-    if (socket.connected) {
+    if (socket?.connected) {
       socket.emit("PING", { from: "Extension", time: Date.now() });
-    } else if (!isConnecting) {
+    } else if (!isConnecting && currentAuthToken) {
       console.log("[AgencyOS] Keepalive: reconnecting socket...");
       isConnecting = true;
-      socket.connect();
+      if (socket) {
+        socket.connect();
+      } else {
+        connectSocket(currentAuthToken);
+      }
     }
   }
 });
 
 // =============================================================================
+// SOCKET EVENT HANDLERS (attached after connection)
+// =============================================================================
+
+function attachSocketEventHandlers() {
+  if (!socket) return;
+
+  // Remove existing listeners to prevent duplicates
+  socket.off("CMD_EXECUTE");
+
+  socket.on("CMD_EXECUTE", async (data) => {
+    console.log("[AgencyOS] Received command:", data);
+
+    if (data.action === "SCRAPE" && data.targetUrl) {
+      await executeScrape(data.platform, data.targetUrl);
+    }
+  });
+}
+
+// =============================================================================
 // SCRAPE COMMAND HANDLER
 // =============================================================================
 
-socket.on("CMD_EXECUTE", async (data) => {
-  console.log("[AgencyOS] Received command:", data);
-
-  if (data.action === "SCRAPE" && data.targetUrl) {
-    await executeScrape(data.platform, data.targetUrl);
-  }
-});
-
 async function executeScrape(platform: string, targetUrl: string) {
+  if (!socket) {
+    console.error("[AgencyOS] Cannot scrape: not connected");
+    return;
+  }
   try {
     // Emit progress: starting
     emitProgress(0, "Fetching selectors...");
@@ -216,7 +348,7 @@ async function executeScrape(platform: string, targetUrl: string) {
     await chrome.tabs.remove(tabId);
 
     // Emit completion
-    socket.emit("TASK_UPDATE", {
+    socket?.emit("TASK_UPDATE", {
       status: "COMPLETED",
       scraped: allJobs.length,
       message: `Scraped ${allJobs.length} jobs from ${platform}`,
@@ -224,7 +356,7 @@ async function executeScrape(platform: string, targetUrl: string) {
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.error("[AgencyOS] Scrape failed:", errorMessage);
-    socket.emit("TASK_UPDATE", {
+    socket?.emit("TASK_UPDATE", {
       status: "ERROR",
       error: errorMessage,
     });
@@ -243,7 +375,7 @@ interface ScrapedJob {
 }
 
 function emitProgress(current: number, status: string) {
-  socket.emit("SCRAPE_PROGRESS", { current, status });
+  socket?.emit("SCRAPE_PROGRESS", { current, status });
 }
 
 const humanDelay = (min = 1000, max = 3000): Promise<void> =>
@@ -369,37 +501,48 @@ function scrapeJobsFromPage(selectors: Record<string, string>): ScrapedJob[] {
 // =============================================================================
 
 const waitForConnection = (timeout = 5000): Promise<boolean> => {
-  return new Promise((resolve) => {
-    if (socket.connected) {
+  return new Promise(async (resolve) => {
+    if (socket?.connected) {
       resolve(true);
+      return;
+    }
+
+    // If no token, can't connect
+    if (!currentAuthToken) {
+      console.log("[AgencyOS] No auth token, cannot connect");
+      resolve(false);
       return;
     }
 
     console.log("[AgencyOS] Waiting for socket connection...");
     if (!isConnecting) {
       isConnecting = true;
-      socket.connect();
+      if (socket) {
+        socket.connect();
+      } else {
+        connectSocket(currentAuthToken);
+      }
     }
 
     let resolved = false;
 
-    const onConnect = () => {
-      if (!resolved) {
+    const checkConnection = () => {
+      if (!resolved && socket?.connected) {
         resolved = true;
-        socket.off("connect", onConnect);
         resolve(true);
       }
     };
 
-    const timer = setTimeout(() => {
+    // Check periodically
+    const interval = setInterval(checkConnection, 100);
+
+    setTimeout(() => {
+      clearInterval(interval);
       if (!resolved) {
         resolved = true;
-        socket.off("connect", onConnect);
         resolve(false);
       }
     }, timeout);
-
-    socket.on("connect", onConnect);
   });
 };
 
@@ -408,25 +551,51 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     switch (req.type) {
       case "GET_STATUS":
         sendResponse({
-          status: socket.connected ? "CONNECTED" : "DISCONNECTED",
+          status: socket?.connected ? "CONNECTED" : "DISCONNECTED",
+          authenticated: !!currentAuthToken,
           error: lastError,
-          socketId: socket.id,
+          socketId: socket?.id,
         });
+        break;
+
+      case "AUTH_TOKEN_FROM_DASHBOARD":
+        // Token received from content script (auth-bridge)
+        if (req.token) {
+          console.log("[AgencyOS] Received auth token from dashboard (via content script)");
+          await storeToken(req.token);
+          currentAuthToken = req.token;
+          connectSocket(req.token);
+          sendResponse({ success: true, status: "Token stored and connecting" });
+        } else {
+          sendResponse({ success: false, error: "No token provided" });
+        }
+        break;
+
+      case "LOGOUT_FROM_DASHBOARD":
+        // Logout received from content script
+        console.log("[AgencyOS] Received logout from dashboard (via content script)");
+        await clearToken();
+        currentAuthToken = null;
+        if (socket) {
+          socket.disconnect();
+          socket = null;
+        }
+        sendResponse({ success: true, status: "Logged out" });
         break;
 
       case "PING":
         const connected = await waitForConnection();
-        if (connected) {
+        if (connected && socket) {
           socket.emit("PING", { from: "Extension", time: Date.now() });
           sendResponse({ success: true });
         } else {
-          sendResponse({ success: false, error: lastError || "Connection timeout" });
+          sendResponse({ success: false, error: lastError || "Not connected" });
         }
         break;
 
       case "SIMULATE_SCRAPE":
         const isConnected = await waitForConnection();
-        if (isConnected) {
+        if (isConnected && socket) {
           const mockJob = {
             platform: "LINKEDIN",
             title: "Software Engineer - AI Agents (Test Job)",
@@ -436,15 +605,21 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           socket.emit("DATA_INGEST", mockJob);
           sendResponse({ success: true, job: mockJob });
         } else {
-          sendResponse({ success: false, error: lastError || "Connection timeout" });
+          sendResponse({ success: false, error: lastError || "Not connected" });
         }
         break;
 
       case "FORCE_RECONNECT":
-        socket.disconnect();
-        await humanDelay(500, 1000);
-        socket.connect();
-        sendResponse({ success: true, message: "Reconnection initiated" });
+        if (currentAuthToken) {
+          if (socket) {
+            socket.disconnect();
+          }
+          await humanDelay(500, 1000);
+          connectSocket(currentAuthToken);
+          sendResponse({ success: true, message: "Reconnection initiated" });
+        } else {
+          sendResponse({ success: false, error: "No auth token" });
+        }
         break;
 
       default:
@@ -456,7 +631,14 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   return true; // Keep channel open for async response
 });
 
-// Initialize keepalive on startup
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+// Initialize socket connection on startup (if token exists)
+initializeSocket();
+
+// Set up keepalive alarm
 setupKeepalive();
 
-export default socket;
+export { socket };

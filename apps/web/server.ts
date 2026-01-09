@@ -4,22 +4,25 @@ import next from "next";
 import { Server, Socket } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
+import { verifyToken } from "@clerk/backend";
 
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = "localhost";
-const port = 3000;
+const hostname = dev ? "localhost" : "0.0.0.0";
+const port = parseInt(process.env.PORT || "3000", 10);
 
 // Allowed origins for CORS - restrict to known sources
 const ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
+  // Production URL (set via env var)
+  process.env.NEXT_PUBLIC_APP_URL,
   // Chrome extension origins use chrome-extension:// protocol
   // The extension ID will be validated separately via Socket auth
-];
+].filter(Boolean) as string[];
 
 // =============================================================================
 // VALIDATION SCHEMAS (Zod)
@@ -120,6 +123,13 @@ interface TaskUpdatePayload {
   message?: string;
 }
 
+// Socket data interface
+interface SocketData {
+  userId?: string;
+  isExtension?: boolean;
+  extensionId?: string;
+}
+
 // Track authenticated extension sockets
 const authenticatedExtensions = new Set<string>();
 
@@ -213,7 +223,7 @@ app.prepare().then(() => {
   });
 
   // Initialize Socket.io with typed events and restricted CORS
-  const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
+  const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>(httpServer, {
     cors: {
       origin: (origin, callback) => {
         // Allow requests with no origin (mobile apps, curl, etc.) in dev
@@ -240,11 +250,53 @@ app.prepare().then(() => {
   });
 
   // =============================================================================
+  // SOCKET.IO AUTH MIDDLEWARE
+  // =============================================================================
+
+  io.use(async (socket, next) => {
+    const token = socket.handshake.auth.token as string | undefined;
+
+    // In development, allow connections without token for testing
+    if (dev && !token) {
+      console.log(`[Socket] Dev mode: allowing unauthenticated connection`);
+      socket.data.userId = "dev-user"; // Fallback for dev
+      return next();
+    }
+
+    if (!token) {
+      return next(new Error("Authentication required"));
+    }
+
+    try {
+      const secretKey = process.env.CLERK_SECRET_KEY;
+      if (!secretKey) {
+        console.error("[Socket] CLERK_SECRET_KEY not configured");
+        return next(new Error("Server configuration error"));
+      }
+
+      const verified = await verifyToken(token, { secretKey });
+      socket.data.userId = verified.sub;
+      console.log(`[Socket] Authenticated user: ${verified.sub}`);
+      next();
+    } catch (err) {
+      console.warn(`[Socket] Token verification failed:`, err);
+      next(new Error("Invalid token"));
+    }
+  });
+
+  // =============================================================================
   // SOCKET.IO CONNECTION HANDLER
   // =============================================================================
 
-  io.on("connection", (socket: Socket<ClientToServerEvents, ServerToClientEvents>) => {
-    console.log(`[Socket] Client connected: ${socket.id}`);
+  io.on("connection", (socket: Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>) => {
+    const userId = socket.data.userId;
+    console.log(`[Socket] Client connected: ${socket.id} (userId: ${userId})`);
+
+    // Join user-specific room for targeted broadcasts
+    if (userId) {
+      socket.join(`user:${userId}`);
+    }
+
     let isExtension = false;
     let extensionId = "";
 
@@ -275,6 +327,12 @@ app.prepare().then(() => {
     // DATA_INGEST - Receive scraped jobs from extension
     // -------------------------------------------------------------------------
     socket.on("DATA_INGEST", async (data) => {
+      // Require authenticated user
+      if (!userId) {
+        socket.emit("ERROR", { message: "Authentication required", url: data?.url });
+        return;
+      }
+
       // Validate payload
       const result = DataIngestSchema.safeParse(data);
 
@@ -285,12 +343,12 @@ app.prepare().then(() => {
       }
 
       const validData = result.data;
-      console.log(`[Socket] Data ingest: ${validData.title.substring(0, 50)}...`);
+      console.log(`[Socket] Data ingest (user: ${userId}): ${validData.title.substring(0, 50)}...`);
 
       try {
-        // Check for existing job by URL
+        // Check for existing job by URL for this user
         const existing = await prisma.job.findUnique({
-          where: { url: validData.url },
+          where: { userId_url: { userId, url: validData.url } },
         });
 
         let job;
@@ -318,6 +376,7 @@ app.prepare().then(() => {
           // Create new job
           job = await prisma.job.create({
             data: {
+              userId,
               platform: validData.platform,
               title: validData.title,
               description: validData.description,
@@ -327,12 +386,12 @@ app.prepare().then(() => {
             },
           });
           isNew = true;
-          console.log(`[DB] Created job: ${job.id} (fitScore: ${fitScore})`);
+          console.log(`[DB] Created job: ${job.id} for user ${userId} (fitScore: ${fitScore})`);
         }
 
-        // Only broadcast new jobs to dashboard
+        // Only broadcast new jobs to user's dashboard
         if (isNew) {
-          io.emit("JOB_UPDATE", job);
+          io.to(`user:${userId}`).emit("JOB_UPDATE", job);
         }
 
         // Acknowledge to extension
@@ -347,6 +406,11 @@ app.prepare().then(() => {
     // CMD_EXECUTE - Forward commands from dashboard to extension
     // -------------------------------------------------------------------------
     socket.on("CMD_EXECUTE", (data) => {
+      if (!userId) {
+        socket.emit("ERROR", { message: "Authentication required" });
+        return;
+      }
+
       const result = CmdExecuteSchema.safeParse(data);
 
       if (!result.success) {
@@ -355,10 +419,10 @@ app.prepare().then(() => {
         return;
       }
 
-      console.log(`[Socket] CMD_EXECUTE: ${result.data.action} on ${result.data.platform}`);
+      console.log(`[Socket] CMD_EXECUTE (user: ${userId}): ${result.data.action} on ${result.data.platform}`);
 
-      // Broadcast to all connected clients (extension will handle it)
-      io.emit("CMD_EXECUTE", result.data);
+      // Send command only to user's devices (dashboard + extension)
+      io.to(`user:${userId}`).emit("CMD_EXECUTE", result.data);
     });
 
     // -------------------------------------------------------------------------
@@ -373,22 +437,30 @@ app.prepare().then(() => {
       }
 
       const validData = result.data;
-      console.log(`[Socket] Task update: ${validData.status}`);
+      console.log(`[Socket] Task update (user: ${userId}): ${validData.status}`);
 
-      // Update job status if jobId provided
-      if (validData.jobId && validData.status) {
+      // Update job status if jobId provided and user is authenticated
+      if (validData.jobId && validData.status && userId) {
         try {
-          await prisma.job.update({
-            where: { id: validData.jobId },
-            data: { status: validData.status },
+          // Verify ownership before update
+          const job = await prisma.job.findFirst({
+            where: { id: validData.jobId, userId },
           });
+          if (job) {
+            await prisma.job.update({
+              where: { id: validData.jobId },
+              data: { status: validData.status },
+            });
+          }
         } catch (err) {
           console.error("[DB] Failed to update job status:", err);
         }
       }
 
-      // Broadcast to dashboard
-      io.emit("TASK_UPDATE", validData);
+      // Broadcast to user's dashboard only
+      if (userId) {
+        io.to(`user:${userId}`).emit("TASK_UPDATE", validData);
+      }
     });
 
     // -------------------------------------------------------------------------
@@ -401,8 +473,10 @@ app.prepare().then(() => {
         return; // Silently ignore invalid progress updates
       }
 
-      // Broadcast to dashboard
-      socket.broadcast.emit("SCRAPE_PROGRESS", result.data);
+      // Broadcast to user's dashboard only
+      if (userId) {
+        io.to(`user:${userId}`).emit("SCRAPE_PROGRESS", result.data);
+      }
     });
 
     // -------------------------------------------------------------------------

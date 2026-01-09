@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 
@@ -15,10 +16,16 @@ type RouteParams = {
 // GET /api/jobs/[id] - Get single job
 export async function GET(request: Request, { params }: RouteParams) {
     try {
+        const { userId } = await auth();
+        if (!userId) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const { id } = await params;
 
-        const job = await prisma.job.findUnique({
-            where: { id },
+        // Verify ownership
+        const job = await prisma.job.findFirst({
+            where: { id, userId },
         });
 
         if (!job) {
@@ -35,6 +42,11 @@ export async function GET(request: Request, { params }: RouteParams) {
 // PATCH /api/jobs/[id] - Update job status
 export async function PATCH(request: Request, { params }: RouteParams) {
     try {
+        const { userId } = await auth();
+        if (!userId) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const { id } = await params;
         const body = await request.json();
 
@@ -45,6 +57,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
                 { error: "Invalid input", details: result.error.flatten() },
                 { status: 400 }
             );
+        }
+
+        // Verify ownership before update
+        const existing = await prisma.job.findFirst({
+            where: { id, userId },
+        });
+
+        if (!existing) {
+            return NextResponse.json({ error: "Job not found" }, { status: 404 });
         }
 
         const job = await prisma.job.update({
@@ -62,7 +83,21 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 // DELETE /api/jobs/[id] - Delete job
 export async function DELETE(request: Request, { params }: RouteParams) {
     try {
+        const { userId } = await auth();
+        if (!userId) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const { id } = await params;
+
+        // Verify ownership before delete
+        const existing = await prisma.job.findFirst({
+            where: { id, userId },
+        });
+
+        if (!existing) {
+            return NextResponse.json({ error: "Job not found" }, { status: 404 });
+        }
 
         await prisma.job.delete({
             where: { id },

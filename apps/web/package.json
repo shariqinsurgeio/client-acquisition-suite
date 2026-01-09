@@ -5,12 +5,17 @@
   "scripts": {
     "dev": "npx tsx server.ts",
     "dev:legacy": "node server.js",
-    "build": "next build",
-    "start": "node server.js",
+    "build": "next build && npx tsc server.ts --outDir . --esModuleInterop --skipLibCheck --module commonjs --target ES2020",
+    "build:server": "npx tsc server.ts --outDir . --esModuleInterop --skipLibCheck --module commonjs --target ES2020",
+    "start": "NODE_ENV=production node server.js",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy"
   },
   "dependencies": {
+    "@clerk/backend": "^2.29.2",
+    "@clerk/nextjs": "^6.36.7",
     "@prisma/client": "^6.19.1",
     "lucide-react": "^0.562.0",
     "next": "16.1.1",
