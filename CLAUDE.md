@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Client Acquisition Suite is a "Puppet Master" distributed system for a 2-person GenAI agency to aggregate job leads from Upwork, LinkedIn, Fiverr, and Freelancer. The user controls everything from a web dashboard while a browser extension acts as the "Hands" executing actions in the local browser context.
 
+**Note:** This project was previously called "AgencyOS" / "Agency OS". Always use "Client Acquisition Suite" or "CAS" for naming.
+
 ## Architecture: The Puppet Master
 
 Two distinct applications communicate via Socket.io:
