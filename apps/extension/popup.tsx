@@ -71,7 +71,7 @@ function IndexPopup() {
       </div>
 
       <h2 style={{ fontSize: 18, marginBottom: 16, color: "#eee" }}>
-        Agency OS Link
+        Client Acquisition Suite
       </h2>
 
       {/* Status Badge */}

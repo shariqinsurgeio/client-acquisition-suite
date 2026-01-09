@@ -9,9 +9,9 @@ const KEEPALIVE_ALARM = "keepAlive";
 const KEEPALIVE_INTERVAL_MINUTES = 0.4; // ~24 seconds to stay under 30s service worker limit
 const MAX_SCRAPE_ITERATIONS = 15;
 const MAX_JOBS_PER_SCRAPE = 50;
-const AUTH_TOKEN_KEY = "agencyos_auth_token";
+const AUTH_TOKEN_KEY = "cas_auth_token";
 
-console.log("[AgencyOS] Initializing extension...");
+console.log("[CAS] Initializing extension...");
 
 // =============================================================================
 // AUTH TOKEN MANAGEMENT
@@ -52,7 +52,7 @@ async function initializeSocket() {
   currentAuthToken = await getStoredToken();
 
   if (!currentAuthToken) {
-    console.log("[AgencyOS] No auth token found, waiting for dashboard authorization");
+    console.log("[CAS] No auth token found, waiting for dashboard authorization");
     return;
   }
 
@@ -65,7 +65,7 @@ function connectSocket(token: string) {
     socket.disconnect();
   }
 
-  console.log("[AgencyOS] Connecting to:", SOCKET_URL);
+  console.log("[CAS] Connecting to:", SOCKET_URL);
 
   socket = io(SOCKET_URL, {
     auth: { token },
@@ -78,7 +78,7 @@ function connectSocket(token: string) {
   });
 
   socket.on("connect", () => {
-    console.log("[AgencyOS] Socket connected:", socket!.id);
+    console.log("[CAS] Socket connected:", socket!.id);
     lastError = "";
     isConnecting = false;
     socket!.emit("EXTENSION_CONNECT", { extensionId: chrome.runtime.id });
@@ -88,25 +88,25 @@ function connectSocket(token: string) {
   });
 
   socket.on("connect_error", async (err) => {
-    console.error("[AgencyOS] Socket connection error:", err.message);
+    console.error("[CAS] Socket connection error:", err.message);
     lastError = err.message;
     isConnecting = false;
 
     // If authentication error, clear stored token
     if (err.message.includes("Authentication") || err.message.includes("token") || err.message.includes("Invalid")) {
-      console.log("[AgencyOS] Auth error, clearing stored token");
+      console.log("[CAS] Auth error, clearing stored token");
       await clearToken();
       currentAuthToken = null;
     }
   });
 
   socket.on("disconnect", (reason) => {
-    console.log("[AgencyOS] Socket disconnected:", reason);
+    console.log("[CAS] Socket disconnected:", reason);
     lastError = `Disconnected: ${reason}`;
   });
 
   socket.on("STATUS_UPDATE", (data) => {
-    console.log("[AgencyOS] Status update:", data);
+    console.log("[CAS] Status update:", data);
   });
 
   // Re-attach command handlers
@@ -118,13 +118,13 @@ function connectSocket(token: string) {
 // =============================================================================
 
 chrome.runtime.onMessageExternal.addListener(async (message, sender, sendResponse) => {
-  console.log("[AgencyOS] External message from:", sender.url, message);
+  console.log("[CAS] External message from:", sender.url, message);
 
   if (message.type === "AUTH_TOKEN") {
     const { token } = message;
 
     if (token) {
-      console.log("[AgencyOS] Received auth token from dashboard");
+      console.log("[CAS] Received auth token from dashboard");
       await storeToken(token);
       currentAuthToken = token;
 
@@ -139,7 +139,7 @@ chrome.runtime.onMessageExternal.addListener(async (message, sender, sendRespons
   }
 
   if (message.type === "LOGOUT") {
-    console.log("[AgencyOS] Received logout from dashboard");
+    console.log("[CAS] Received logout from dashboard");
     await clearToken();
     currentAuthToken = null;
 
@@ -174,7 +174,7 @@ function setupKeepalive() {
   chrome.alarms.create(KEEPALIVE_ALARM, {
     periodInMinutes: KEEPALIVE_INTERVAL_MINUTES,
   });
-  console.log("[AgencyOS] Keepalive alarm set");
+  console.log("[CAS] Keepalive alarm set");
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -182,7 +182,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (socket?.connected) {
       socket.emit("PING", { from: "Extension", time: Date.now() });
     } else if (!isConnecting && currentAuthToken) {
-      console.log("[AgencyOS] Keepalive: reconnecting socket...");
+      console.log("[CAS] Keepalive: reconnecting socket...");
       isConnecting = true;
       if (socket) {
         socket.connect();
@@ -204,7 +204,7 @@ function attachSocketEventHandlers() {
   socket.off("CMD_EXECUTE");
 
   socket.on("CMD_EXECUTE", async (data) => {
-    console.log("[AgencyOS] Received command:", data);
+    console.log("[CAS] Received command:", data);
 
     if (data.action === "SCRAPE" && data.targetUrl) {
       await executeScrape(data.platform, data.targetUrl);
@@ -218,7 +218,7 @@ function attachSocketEventHandlers() {
 
 async function executeScrape(platform: string, targetUrl: string) {
   if (!socket) {
-    console.error("[AgencyOS] Cannot scrape: not connected");
+    console.error("[CAS] Cannot scrape: not connected");
     return;
   }
   try {
@@ -232,7 +232,7 @@ async function executeScrape(platform: string, targetUrl: string) {
     const selectors = await selectorsRes.json();
 
     if (!selectors || selectors.length === 0) {
-      console.error("[AgencyOS] No selectors found for platform:", platform);
+      console.error("[CAS] No selectors found for platform:", platform);
       socket.emit("TASK_UPDATE", {
         status: "ERROR",
         error: "No selectors configured for " + platform,
@@ -241,7 +241,7 @@ async function executeScrape(platform: string, targetUrl: string) {
     }
 
     const selectorConfig = JSON.parse(selectors[0].selectors);
-    console.log("[AgencyOS] Using selectors:", selectorConfig);
+    console.log("[CAS] Using selectors:", selectorConfig);
 
     emitProgress(0, "Opening page...");
 
@@ -273,13 +273,13 @@ async function executeScrape(platform: string, targetUrl: string) {
           currentJobs = results[0]?.result || [];
           break;
         } catch (err) {
-          console.warn(`[AgencyOS] Scrape attempt ${retry + 1} failed:`, err);
+          console.warn(`[CAS] Scrape attempt ${retry + 1} failed:`, err);
           if (retry === 1) throw err;
           await humanDelay(1000, 2000);
         }
       }
 
-      console.log(`[AgencyOS] Found ${currentJobs.length} jobs on page`);
+      console.log(`[CAS] Found ${currentJobs.length} jobs on page`);
 
       // Merge new jobs (deduplicate by URL)
       const existingUrls = new Set(allJobs.map((j) => j.url));
@@ -295,9 +295,9 @@ async function executeScrape(platform: string, targetUrl: string) {
       // Check if we got new jobs
       if (allJobs.length === lastJobCount) {
         noNewJobsIterations++;
-        console.log(`[AgencyOS] No new jobs (attempt ${noNewJobsIterations}/3)`);
+        console.log(`[CAS] No new jobs (attempt ${noNewJobsIterations}/3)`);
         if (noNewJobsIterations >= 3) {
-          console.log("[AgencyOS] Stopping: no new jobs after 3 scrolls");
+          console.log("[CAS] Stopping: no new jobs after 3 scrolls");
           break;
         }
       } else {
@@ -307,7 +307,7 @@ async function executeScrape(platform: string, targetUrl: string) {
 
       // Safety limit
       if (allJobs.length >= MAX_JOBS_PER_SCRAPE) {
-        console.log("[AgencyOS] Reached max job limit");
+        console.log("[CAS] Reached max job limit");
         break;
       }
 
@@ -321,7 +321,7 @@ async function executeScrape(platform: string, targetUrl: string) {
       await humanDelay(2000, 3500);
     }
 
-    console.log(`[AgencyOS] Total unique jobs scraped: ${allJobs.length}`);
+    console.log(`[CAS] Total unique jobs scraped: ${allJobs.length}`);
     emitProgress(allJobs.length, "Sending jobs to server...");
 
     // Send each job to server
@@ -355,7 +355,7 @@ async function executeScrape(platform: string, targetUrl: string) {
     });
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error("[AgencyOS] Scrape failed:", errorMessage);
+    console.error("[CAS] Scrape failed:", errorMessage);
     socket?.emit("TASK_UPDATE", {
       status: "ERROR",
       error: errorMessage,
@@ -385,7 +385,7 @@ const humanDelay = (min = 1000, max = 3000): Promise<void> =>
 
 // Content script function (injected into page)
 function scrapeJobsFromPage(selectors: Record<string, string>): ScrapedJob[] {
-  console.log("[AgencyOS Scraper] Running on:", window.location.href);
+  console.log("[CAS Scraper] Running on:", window.location.href);
 
   const jobs: ScrapedJob[] = [];
 
@@ -407,7 +407,7 @@ function scrapeJobsFromPage(selectors: Record<string, string>): ScrapedJob[] {
   for (const selector of cardSelectors) {
     const found = document.querySelectorAll(selector);
     if (found.length > 0) {
-      console.log(`[AgencyOS Scraper] Found ${found.length} cards with: ${selector}`);
+      console.log(`[CAS Scraper] Found ${found.length} cards with: ${selector}`);
       cards = found;
       break;
     }
@@ -426,14 +426,14 @@ function scrapeJobsFromPage(selectors: Record<string, string>): ScrapedJob[] {
       const container = document.querySelector(containerSel);
       if (container) {
         cards = container.querySelectorAll(":scope > *");
-        console.log(`[AgencyOS Scraper] Found ${cards.length} children in container`);
+        console.log(`[CAS Scraper] Found ${cards.length} children in container`);
         break;
       }
     }
   }
 
   if (!cards || cards.length === 0) {
-    console.log("[AgencyOS Scraper] No job cards found");
+    console.log("[CAS Scraper] No job cards found");
     return jobs;
   }
 
@@ -492,7 +492,7 @@ function scrapeJobsFromPage(selectors: Record<string, string>): ScrapedJob[] {
     });
   });
 
-  console.log("[AgencyOS Scraper] Scraped jobs:", jobs.length);
+  console.log("[CAS Scraper] Scraped jobs:", jobs.length);
   return jobs;
 }
 
@@ -509,12 +509,12 @@ const waitForConnection = (timeout = 5000): Promise<boolean> => {
 
     // If no token, can't connect
     if (!currentAuthToken) {
-      console.log("[AgencyOS] No auth token, cannot connect");
+      console.log("[CAS] No auth token, cannot connect");
       resolve(false);
       return;
     }
 
-    console.log("[AgencyOS] Waiting for socket connection...");
+    console.log("[CAS] Waiting for socket connection...");
     if (!isConnecting) {
       isConnecting = true;
       if (socket) {
@@ -561,7 +561,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       case "AUTH_TOKEN_FROM_DASHBOARD":
         // Token received from content script (auth-bridge)
         if (req.token) {
-          console.log("[AgencyOS] Received auth token from dashboard (via content script)");
+          console.log("[CAS] Received auth token from dashboard (via content script)");
           await storeToken(req.token);
           currentAuthToken = req.token;
           connectSocket(req.token);
@@ -573,7 +573,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
       case "LOGOUT_FROM_DASHBOARD":
         // Logout received from content script
-        console.log("[AgencyOS] Received logout from dashboard (via content script)");
+        console.log("[CAS] Received logout from dashboard (via content script)");
         await clearToken();
         currentAuthToken = null;
         if (socket) {

@@ -1,9 +1,9 @@
-# Render Blueprint - Agency OS
+# Render Blueprint - Client Acquisition Suite
 # https://render.com/docs/infrastructure-as-code
 
 services:
   - type: web
-    name: agency-os
+    name: client-acquisition-suite
     runtime: node
     region: oregon
     plan: starter
@@ -17,7 +17,7 @@ services:
         value: production
       - key: DATABASE_URL
         fromDatabase:
-          name: agency-os-db
+          name: client-acquisition-db
           property: connectionString
       - key: CLERK_SECRET_KEY
         sync: false
@@ -34,17 +34,17 @@ services:
       - key: NEXT_PUBLIC_APP_URL
         fromService:
           type: web
-          name: agency-os
+          name: client-acquisition-suite
           property: host
       - key: NEXT_PUBLIC_SOCKET_URL
         fromService:
           type: web
-          name: agency-os
+          name: client-acquisition-suite
           property: host
 
 databases:
-  - name: agency-os-db
+  - name: client-acquisition-db
     region: oregon
     plan: starter
-    databaseName: agencyos
-    user: agencyos
+    databaseName: clientacquisition
+    user: clientacquisition

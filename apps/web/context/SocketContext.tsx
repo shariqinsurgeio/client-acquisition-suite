@@ -135,7 +135,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
 
             // Notify extension of logout
             if (typeof window !== "undefined") {
-                window.postMessage({ type: "AGENCYOS_LOGOUT" }, window.location.origin);
+                window.postMessage({ type: "CAS_LOGOUT" }, window.location.origin);
             }
         }
     }, [isSignedIn, socket]);
@@ -151,7 +151,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
             const message = event.data;
 
             // Extension announced its presence
-            if (message?.type === "AGENCYOS_EXTENSION_PRESENT") {
+            if (message?.type === "CAS_EXTENSION_PRESENT") {
                 console.log("[Socket] Extension detected:", message.extensionId);
                 setExtensionInstalled(true);
 
@@ -162,7 +162,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
                         if (token) {
                             console.log("[Socket] Sending auth token to extension...");
                             window.postMessage({
-                                type: "AGENCYOS_AUTH_TOKEN",
+                                type: "CAS_AUTH_TOKEN",
                                 token,
                             }, window.location.origin);
                             tokenSentRef.current = true;
@@ -174,7 +174,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
             }
 
             // Extension status response
-            if (message?.type === "AGENCYOS_EXTENSION_STATUS") {
+            if (message?.type === "CAS_EXTENSION_STATUS") {
                 setExtensionInstalled(message.installed ?? false);
                 if (message.status === "CONNECTED") {
                     setExtensionStatus("ONLINE");
@@ -182,7 +182,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
             }
 
             // Auth response from extension
-            if (message?.type === "AGENCYOS_AUTH_RESPONSE") {
+            if (message?.type === "CAS_AUTH_RESPONSE") {
                 console.log("[Socket] Extension auth response:", message);
             }
         };
@@ -190,7 +190,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
         window.addEventListener("message", handleMessage);
 
         // Check for extension presence
-        window.postMessage({ type: "AGENCYOS_CHECK_EXTENSION" }, window.location.origin);
+        window.postMessage({ type: "CAS_CHECK_EXTENSION" }, window.location.origin);
 
         return () => {
             window.removeEventListener("message", handleMessage);
@@ -209,7 +209,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
                 if (token) {
                     console.log("[Socket] Sending auth token to extension (on sign in)...");
                     window.postMessage({
-                        type: "AGENCYOS_AUTH_TOKEN",
+                        type: "CAS_AUTH_TOKEN",
                         token,
                     }, window.location.origin);
                     tokenSentRef.current = true;

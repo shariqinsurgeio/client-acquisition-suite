@@ -7,7 +7,7 @@ export const config: PlasmoCSConfig = {
   run_at: "document_start",
 };
 
-console.log("[AgencyOS Auth Bridge] Loaded on:", window.location.href);
+console.log("[CAS Auth Bridge] Loaded on:", window.location.href);
 
 // Listen for auth token messages from the web app
 window.addEventListener("message", async (event) => {
@@ -19,8 +19,8 @@ window.addEventListener("message", async (event) => {
   const message = event.data;
 
   // Handle auth token from dashboard
-  if (message?.type === "AGENCYOS_AUTH_TOKEN") {
-    console.log("[AgencyOS Auth Bridge] Received auth token from dashboard");
+  if (message?.type === "CAS_AUTH_TOKEN") {
+    console.log("[CAS Auth Bridge] Received auth token from dashboard");
 
     try {
       const response = await chrome.runtime.sendMessage({
@@ -28,18 +28,18 @@ window.addEventListener("message", async (event) => {
         token: message.token,
       });
 
-      console.log("[AgencyOS Auth Bridge] Token forwarded to background:", response);
+      console.log("[CAS Auth Bridge] Token forwarded to background:", response);
 
       // Notify the dashboard of success
       window.postMessage({
-        type: "AGENCYOS_AUTH_RESPONSE",
+        type: "CAS_AUTH_RESPONSE",
         success: response?.success ?? false,
         status: response?.status,
       }, window.location.origin);
     } catch (err) {
-      console.error("[AgencyOS Auth Bridge] Failed to forward token:", err);
+      console.error("[CAS Auth Bridge] Failed to forward token:", err);
       window.postMessage({
-        type: "AGENCYOS_AUTH_RESPONSE",
+        type: "CAS_AUTH_RESPONSE",
         success: false,
         error: err instanceof Error ? err.message : String(err),
       }, window.location.origin);
@@ -47,23 +47,23 @@ window.addEventListener("message", async (event) => {
   }
 
   // Handle logout from dashboard
-  if (message?.type === "AGENCYOS_LOGOUT") {
-    console.log("[AgencyOS Auth Bridge] Received logout from dashboard");
+  if (message?.type === "CAS_LOGOUT") {
+    console.log("[CAS Auth Bridge] Received logout from dashboard");
 
     try {
       const response = await chrome.runtime.sendMessage({
         type: "LOGOUT_FROM_DASHBOARD",
       });
 
-      console.log("[AgencyOS Auth Bridge] Logout forwarded to background:", response);
+      console.log("[CAS Auth Bridge] Logout forwarded to background:", response);
     } catch (err) {
-      console.error("[AgencyOS Auth Bridge] Failed to forward logout:", err);
+      console.error("[CAS Auth Bridge] Failed to forward logout:", err);
     }
   }
 
   // Handle extension status check
-  if (message?.type === "AGENCYOS_CHECK_EXTENSION") {
-    console.log("[AgencyOS Auth Bridge] Extension check requested");
+  if (message?.type === "CAS_CHECK_EXTENSION") {
+    console.log("[CAS Auth Bridge] Extension check requested");
 
     try {
       const response = await chrome.runtime.sendMessage({
@@ -71,14 +71,14 @@ window.addEventListener("message", async (event) => {
       });
 
       window.postMessage({
-        type: "AGENCYOS_EXTENSION_STATUS",
+        type: "CAS_EXTENSION_STATUS",
         installed: true,
         ...response,
       }, window.location.origin);
     } catch (err) {
       // Extension might not be responding
       window.postMessage({
-        type: "AGENCYOS_EXTENSION_STATUS",
+        type: "CAS_EXTENSION_STATUS",
         installed: false,
         error: err instanceof Error ? err.message : String(err),
       }, window.location.origin);
@@ -88,6 +88,6 @@ window.addEventListener("message", async (event) => {
 
 // Announce extension presence to the page
 window.postMessage({
-  type: "AGENCYOS_EXTENSION_PRESENT",
+  type: "CAS_EXTENSION_PRESENT",
   extensionId: chrome.runtime.id,
 }, window.location.origin);

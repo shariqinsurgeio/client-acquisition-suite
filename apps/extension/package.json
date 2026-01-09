@@ -1,9 +1,9 @@
 {
-  "name": "agency-os-extension",
-  "displayName": "Agency OS",
+  "name": "client-acquisition-extension",
+  "displayName": "Client Acquisition Suite",
   "version": "0.2.0",
-  "description": "Browser automation extension for Agency OS - aggregates freelance job leads.",
-  "author": "Agency OS Team",
+  "description": "Browser automation extension for Client Acquisition Suite - aggregates freelance job leads.",
+  "author": "Client Acquisition Suite Team",
   "scripts": {
     "dev": "plasmo dev",
     "build": "plasmo build",

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Agency OS is a "Puppet Master" distributed system for a 2-person GenAI agency to aggregate job leads from Upwork, LinkedIn, Fiverr, and Freelancer. The user controls everything from a web dashboard while a browser extension acts as the "Hands" executing actions in the local browser context.
+Client Acquisition Suite is a "Puppet Master" distributed system for a 2-person GenAI agency to aggregate job leads from Upwork, LinkedIn, Fiverr, and Freelancer. The user controls everything from a web dashboard while a browser extension acts as the "Hands" executing actions in the local browser context.
 
 ## Architecture: The Puppet Master
 

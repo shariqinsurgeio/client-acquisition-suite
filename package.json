@@ -1,5 +1,5 @@
 {
-  "name": "agency-os-monorepo",
+  "name": "client-acquisition-suite",
   "private": true,
   "workspaces": [
     "apps/*",

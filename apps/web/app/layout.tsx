@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agency OS - Client Acquisition Suite",
+  title: "Client Acquisition Suite",
   description: "Aggregate and manage freelance job leads from multiple platforms",
 };
 
