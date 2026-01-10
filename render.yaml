@@ -16,9 +16,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: client-acquisition-db
-          property: connectionString
+        sync: false  # Set manually in Render dashboard (Neon connection string)
       - key: CLERK_SECRET_KEY
         sync: false
       - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
@@ -42,9 +40,6 @@ services:
           name: client-acquisition-suite
           property: host
 
-databases:
-  - name: client-acquisition-db
-    region: oregon
-    plan: starter
-    databaseName: clientacquisition
-    user: clientacquisition
+# Database: Using Neon PostgreSQL (free forever)
+# Set DATABASE_URL manually in Render dashboard with your Neon connection string
+# Example: postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/dbname?sslmode=require
