@@ -552,7 +552,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       case "GET_STATUS":
         sendResponse({
           status: socket?.connected ? "CONNECTED" : "DISCONNECTED",
-          authenticated: !!currentAuthToken,
+          isAuthenticated: !!currentAuthToken,
           error: lastError,
           socketId: socket?.id,
         });
@@ -588,22 +588,6 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         if (connected && socket) {
           socket.emit("PING", { from: "Extension", time: Date.now() });
           sendResponse({ success: true });
-        } else {
-          sendResponse({ success: false, error: lastError || "Not connected" });
-        }
-        break;
-
-      case "SIMULATE_SCRAPE":
-        const isConnected = await waitForConnection();
-        if (isConnected && socket) {
-          const mockJob = {
-            platform: "LINKEDIN",
-            title: "Software Engineer - AI Agents (Test Job)",
-            description: "This is a test job from the extension popup.",
-            url: "https://linkedin.com/jobs/view/test-" + Date.now(),
-          };
-          socket.emit("DATA_INGEST", mockJob);
-          sendResponse({ success: true, job: mockJob });
         } else {
           sendResponse({ success: false, error: lastError || "Not connected" });
         }

@@ -3,7 +3,13 @@ import type { PlasmoCSConfig } from "plasmo";
 // Content script that bridges auth between web dashboard and extension background
 
 export const config: PlasmoCSConfig = {
-  matches: ["http://localhost:3000/*", "http://127.0.0.1:3000/*", "https://*.onrender.com/*"],
+  matches: [
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
+    "https://*.onrender.com/*",
+    "https://*.trycloudflare.com/*",
+    "https://*.app.github.dev/*",  // GitHub Codespaces
+  ],
   run_at: "document_start",
 };
 

@@ -231,12 +231,13 @@ app.prepare().then(() => {
           return callback(null, true);
         }
 
-        // Allow localhost origins
+        // Allow localhost origins and tunnel URLs
         if (origin && (
           ALLOWED_ORIGINS.includes(origin) ||
           origin.startsWith("chrome-extension://") ||
           origin.startsWith("http://localhost") ||
-          origin.startsWith("http://127.0.0.1")
+          origin.startsWith("http://127.0.0.1") ||
+          origin.endsWith(".trycloudflare.com") // Cloudflare tunnel for dev
         )) {
           return callback(null, true);
         }

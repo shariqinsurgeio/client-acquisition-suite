@@ -8,7 +8,7 @@
     }
   },
 
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && npm install && cd apps/web && npx prisma generate",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y tmux cron && npm install -g @anthropic-ai/claude-code && npm install && cd apps/web && npx prisma generate",
 
   "forwardPorts": [3000],
 
@@ -23,5 +23,5 @@
     }
   },
 
-  "postStartCommand": "cp -n apps/extension/.env.example apps/extension/.env 2>/dev/null || true"
+  "postStartCommand": "cp -n apps/extension/.env.example apps/extension/.env 2>/dev/null || true && sudo service cron start && (crontab -l 2>/dev/null | grep -q keepalive || (crontab -l 2>/dev/null; echo '*/3 * * * * /workspaces/client-acquisition-suite/scripts/keepalive.sh') | crontab -)"
 }

@@ -40,13 +40,17 @@
       "https://*.fiverr.com/*",
       "https://*.freelancer.com/*",
       "http://localhost/*",
-      "http://127.0.0.1/*"
+      "http://127.0.0.1/*",
+      "https://*.trycloudflare.com/*",
+      "https://*.app.github.dev/*"
     ],
     "externally_connectable": {
       "matches": [
         "http://localhost:3000/*",
         "http://127.0.0.1:3000/*",
-        "https://*.onrender.com/*"
+        "https://*.onrender.com/*",
+        "https://*.trycloudflare.com/*",
+        "https://*.app.github.dev/*"
       ]
     }
   }

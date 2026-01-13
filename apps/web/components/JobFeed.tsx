@@ -11,6 +11,11 @@ import {
     ChevronUp,
     TrendingUp,
     Filter,
+    Search,
+    X,
+    Trash2,
+    CheckSquare,
+    Square,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSocket } from "@/context/SocketContext";
@@ -34,6 +39,9 @@ export const JobFeed = () => {
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [sortBy, setSortBy] = useState<SortBy>("fitScore");
     const [filterStatus, setFilterStatus] = useState<FilterStatus>("ALL");
+    const [searchQuery, setSearchQuery] = useState("");
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [bulkLoading, setBulkLoading] = useState(false);
     const { socket } = useSocket();
 
     // Fetch initial jobs
@@ -85,11 +93,92 @@ export const JobFeed = () => {
         }
     };
 
+    // Toggle selection
+    const toggleSelect = (jobId: string) => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(jobId)) {
+                next.delete(jobId);
+            } else {
+                next.add(jobId);
+            }
+            return next;
+        });
+    };
+
+    // Select all visible jobs
+    const selectAll = () => {
+        const allIds = new Set(processedJobs.map((j) => j.id));
+        setSelectedIds(allIds);
+    };
+
+    // Clear selection
+    const clearSelection = () => {
+        setSelectedIds(new Set());
+    };
+
+    // Bulk archive
+    const bulkArchive = async () => {
+        if (selectedIds.size === 0) return;
+        setBulkLoading(true);
+        try {
+            await Promise.all(
+                Array.from(selectedIds).map((id) =>
+                    fetch(`/api/jobs/${id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: "ARCHIVED" }),
+                    })
+                )
+            );
+            setJobs((prev) =>
+                prev.map((j) =>
+                    selectedIds.has(j.id) ? { ...j, status: "ARCHIVED" } : j
+                )
+            );
+            clearSelection();
+        } catch (err) {
+            console.error("Failed to bulk archive:", err);
+        } finally {
+            setBulkLoading(false);
+        }
+    };
+
+    // Bulk delete
+    const bulkDelete = async () => {
+        if (selectedIds.size === 0) return;
+        if (!confirm(`Delete ${selectedIds.size} job(s)? This cannot be undone.`)) return;
+        setBulkLoading(true);
+        try {
+            await Promise.all(
+                Array.from(selectedIds).map((id) =>
+                    fetch(`/api/jobs/${id}`, { method: "DELETE" })
+                )
+            );
+            setJobs((prev) => prev.filter((j) => !selectedIds.has(j.id)));
+            clearSelection();
+        } catch (err) {
+            console.error("Failed to bulk delete:", err);
+        } finally {
+            setBulkLoading(false);
+        }
+    };
+
     // Sort and filter jobs
     const processedJobs = jobs
         .filter((job) => {
-            if (filterStatus === "ALL") return true;
-            return job.status === filterStatus;
+            // Status filter
+            if (filterStatus !== "ALL" && job.status !== filterStatus) return false;
+
+            // Search filter
+            if (searchQuery.trim()) {
+                const query = searchQuery.toLowerCase();
+                const matchesTitle = job.title.toLowerCase().includes(query);
+                const matchesDescription = job.description.toLowerCase().includes(query);
+                if (!matchesTitle && !matchesDescription) return false;
+            }
+
+            return true;
         })
         .sort((a, b) => {
             if (sortBy === "fitScore") {
@@ -123,9 +212,44 @@ export const JobFeed = () => {
     };
 
     return (
-        <div className="h-full flex flex-col bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+        <div className="h-full flex flex-col bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden relative">
+            {/* Bulk Selection Bar */}
+            {selectedIds.size > 0 && (
+                <div className="absolute top-0 left-0 right-0 z-10 bg-indigo-600 text-white p-3 flex items-center justify-between shadow-lg">
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={clearSelection}
+                            className="p-1 hover:bg-indigo-500 rounded"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                        <span className="font-medium">
+                            {selectedIds.size} selected
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={bulkArchive}
+                            disabled={bulkLoading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-400 rounded-md text-sm font-medium disabled:opacity-50"
+                        >
+                            <Archive className="w-4 h-4" />
+                            Archive
+                        </button>
+                        <button
+                            onClick={bulkDelete}
+                            disabled={bulkLoading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 hover:bg-red-400 rounded-md text-sm font-medium disabled:opacity-50"
+                        >
+                            <Trash2 className="w-4 h-4" />
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Header with controls */}
-            <div className="p-4 border-b border-gray-200 bg-gray-50">
+            <div className={`p-4 border-b border-gray-200 bg-gray-50 ${selectedIds.size > 0 ? "mt-14" : ""}`}>
                 <div className="flex items-center justify-between mb-3">
                     <h2 className="font-semibold text-gray-700 flex items-center gap-2">
                         <Briefcase className="w-4 h-4" /> Live Job Feed
@@ -133,6 +257,43 @@ export const JobFeed = () => {
                             ({processedJobs.length} jobs)
                         </span>
                     </h2>
+                    {/* Select All / Clear */}
+                    {processedJobs.length > 0 && (
+                        <button
+                            onClick={selectedIds.size === processedJobs.length ? clearSelection : selectAll}
+                            className="text-xs text-indigo-600 hover:text-indigo-700 font-medium flex items-center gap-1"
+                        >
+                            {selectedIds.size === processedJobs.length ? (
+                                <>
+                                    <CheckSquare className="w-4 h-4" /> Deselect All
+                                </>
+                            ) : (
+                                <>
+                                    <Square className="w-4 h-4" /> Select All
+                                </>
+                            )}
+                        </button>
+                    )}
+                </div>
+
+                {/* Search Input */}
+                <div className="relative mb-3">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search jobs by keyword..."
+                        className="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    />
+                    {searchQuery && (
+                        <button
+                            onClick={() => setSearchQuery("")}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-gray-100 rounded"
+                        >
+                            <X className="w-4 h-4 text-gray-400" />
+                        </button>
+                    )}
                 </div>
 
                 {/* Sort & Filter Controls */}
@@ -174,7 +335,9 @@ export const JobFeed = () => {
                         <Briefcase className="w-12 h-12 mx-auto mb-3 text-gray-300" />
                         <p className="font-medium">No jobs found</p>
                         <p className="text-sm mt-1">
-                            {filterStatus !== "ALL"
+                            {searchQuery
+                                ? `No results for "${searchQuery}"`
+                                : filterStatus !== "ALL"
                                 ? "Try changing the filter"
                                 : "Click 'Scrape Upwork' to fetch jobs"}
                         </p>
@@ -185,7 +348,9 @@ export const JobFeed = () => {
                     <div
                         key={job.id}
                         className={`border rounded-lg transition-all ${
-                            expandedId === job.id
+                            selectedIds.has(job.id)
+                                ? "border-indigo-400 bg-indigo-50"
+                                : expandedId === job.id
                                 ? "border-indigo-300 shadow-md"
                                 : "border-gray-100 hover:border-indigo-200 hover:shadow-sm"
                         }`}
@@ -194,6 +359,22 @@ export const JobFeed = () => {
                         <div className="p-4">
                             <div className="flex justify-between items-start mb-2">
                                 <div className="flex items-center gap-2">
+                                    {/* Selection Checkbox */}
+                                    <button
+                                        onClick={() => toggleSelect(job.id)}
+                                        className={`p-0.5 rounded transition-colors ${
+                                            selectedIds.has(job.id)
+                                                ? "text-indigo-600"
+                                                : "text-gray-300 hover:text-gray-400"
+                                        }`}
+                                    >
+                                        {selectedIds.has(job.id) ? (
+                                            <CheckSquare className="w-5 h-5" />
+                                        ) : (
+                                            <Square className="w-5 h-5" />
+                                        )}
+                                    </button>
+
                                     {/* Platform Badge */}
                                     <span
                                         className={`text-xs font-bold px-2 py-0.5 rounded ${getPlatformColor(
