@@ -3049,10 +3049,11 @@ function scrapeJobsFromPageInjected() {
       // Also reject titles that look like descriptions (contain newlines or start with "About")
       if (title.length > 200 || title.includes('\n') || title.startsWith('About ')) {
         console.log(`[CAS Scraper] Card ${index}: title looks like description, trying URL`);
-        // Try to extract title from URL instead: /jobs/Title-Here_~xxxxx
-        const urlMatch = url.match(/\/jobs\/([^~_]+)/);
+        // Try to extract title from URL: /jobs/Title-Here_~xxxxx or /jobs/Title-Here~xxxxx
+        // Use lazy match to capture title part before _~ or ~ followed by job ID
+        const urlMatch = url.match(/\/jobs\/(.+?)(?:_~|~)/);
         if (urlMatch) {
-          title = urlMatch[1].replace(/-/g, ' ').trim();
+          title = urlMatch[1].replace(/-/g, ' ').replace(/_/g, ' ').trim();
         } else {
           title = title.slice(0, 150); // Last resort: truncate
         }
