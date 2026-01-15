@@ -346,5 +346,96 @@ History View: Shows 39 Found / 14 New / 25 Updated ✅
 
 ---
 
-*Session ended: January 15, 2026 (Continuation)*
-*All critical fixes committed and tested successfully*
+## Session 3: Shortlist Investigation (Jan 15, Later)
+
+### User Report
+Jobs with 70-90% match scores visible on dashboard are NOT being shortlisted - neither in database nor UI.
+
+### Investigation Findings
+
+**Issue 1: No Manual Shortlist Button**
+- UI only had a "Shortlisted Only" filter toggle
+- No way for users to manually shortlist jobs
+- PATCH API didn't support `isShortlisted` field
+
+**Fix Applied:**
+- Added `isShortlisted` to PATCH API schema (`apps/web/app/api/jobs/[id]/route.ts`)
+- Added manual shortlist button to job cards (both card and table view)
+- Star button toggles shortlist status via API call
+
+**Issue 2: scoreWinLikelihood NULL for Old Jobs**
+
+Timeline discovery:
+| Time | Event |
+|------|-------|
+| Jan 14, 07:20 UTC | 29 jobs scraped (commit `8b7ff79`) |
+| Jan 15, 12:08 UTC | Commit `61aac4e` added scoreWinLikelihood to DB writes |
+| Jan 15, 18:39 UTC | 69 jobs scraped WITH scoreWinLikelihood |
+
+**Root Cause:** Jan 14 jobs were created BEFORE `scoreWinLikelihood` was being saved to database. The `calculateMultiScore()` function existed but results weren't persisted.
+
+**Database State:**
+```
+OLD jobs (Jan 14): 29 jobs
+  - fitScore: 30-90%
+  - scoreWinLikelihood: NULL
+  - 7 jobs have fitScore >= 80% (should be shortlisted)
+
+NEW jobs (Jan 15): 69 jobs
+  - scoreWinLikelihood: 50-74% (max 74%)
+  - None reach 80% threshold
+```
+
+**Why Zero Auto-Shortlists:**
+1. Old high-scoring jobs (80-90%) → `scoreWinLikelihood` is NULL → auto-shortlist can't see scores
+2. New jobs → scores populated but max is 74% (below 80% threshold)
+
+### The 7 Jobs That Should Be Shortlisted
+
+| Score | Job Title |
+|-------|-----------|
+| 90% | Go-To-Market Engineer (Outbound Systems) |
+| 82% | Automation + AI Systems Builder (CRM Workflows) |
+| 82% | Senior Prompt Engineer (AI Visuals/Workflows) |
+| 82% | Senior Engineer - Social Media APIs |
+| 82% | AI Automation Specialist |
+| 82% | Senior Engineer - Social Media APIs (duplicate) |
+| 81% | AI-Led Sales Intelligence MVP Development |
+
+### Score Display Logic (job-feed.tsx:65-67)
+```typescript
+const winLikelihood = legacyJob.scoreWinLikelihood;
+const fitScore = (winLikelihood ?? legacyJob.fitScore) || 50;
+// UI shows fitScore if scoreWinLikelihood is NULL
+```
+
+This is why user sees 90% on dashboard but job isn't shortlisted - UI falls back to `fitScore` but auto-shortlist checks `scoreWinLikelihood` (which is NULL).
+
+### Pending Fix
+Backfill 29 old jobs: set `scoreWinLikelihood = fitScore` and auto-shortlist the 7 qualifying ones (>=80%).
+
+### Files Modified This Session
+1. `apps/web/app/api/jobs/[id]/route.ts` - Added `isShortlisted` to schema
+2. `apps/web/components/grandmaster/job-feed.tsx` - Added shortlist toggle button
+
+---
+
+## Next Actions (Updated)
+
+### P0 - Critical
+1. **Backfill old jobs** - Set `scoreWinLikelihood = fitScore` for 29 NULL jobs
+2. **Auto-shortlist qualifying jobs** - 7 jobs with fitScore >= 80%
+3. **Commit shortlist UI changes** - Manual shortlist button added
+
+### P1 - High Priority
+4. Persist daily counters to database
+5. Investigate why new jobs score lower (multi-score algorithm may be too conservative)
+
+### P2 - Medium Priority
+6. GraphQL interception enhancement
+7. Add isRefresh flag to enrichment
+
+---
+
+*Session paused: January 15, 2026*
+*Next: Backfill old jobs, commit UI changes*

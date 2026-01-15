@@ -33,6 +33,7 @@ async function getUserId(request: Request): Promise<string | null> {
 const UpdateJobSchema = z.object({
     status: z.enum(["NEW", "SAVED", "APPLIED", "ARCHIVED", "HIDDEN"]).optional(),
     fitScore: z.number().min(0).max(100).optional(),
+    isShortlisted: z.boolean().optional(),
 });
 
 type RouteParams = {
@@ -94,9 +95,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
             return NextResponse.json({ error: "Job not found" }, { status: 404 });
         }
 
+        // Handle shortlistedAt timestamp when isShortlisted changes
+        const updateData: Record<string, unknown> = { ...result.data };
+        if (result.data.isShortlisted !== undefined) {
+            updateData.shortlistedAt = result.data.isShortlisted ? new Date() : null;
+        }
+
         const job = await prisma.job.update({
             where: { id },
-            data: result.data,
+            data: updateData,
         });
 
         return NextResponse.json(job);

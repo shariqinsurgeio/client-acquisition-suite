@@ -573,22 +573,50 @@ All operations complete with correct counts ✅
 
 ---
 
+## Session 3: Shortlist Bug Investigation (Jan 15)
+
+### Problem
+Jobs showing 70-90% match scores on dashboard were NOT being shortlisted.
+
+### Root Cause
+1. **29 old jobs (Jan 14)** have `scoreWinLikelihood = NULL` because they were scraped before commit `61aac4e` added DB persistence
+2. **69 new jobs (Jan 15)** have `scoreWinLikelihood` populated but max is 74% (below 80% threshold)
+3. UI displays `fitScore` as fallback when `scoreWinLikelihood` is NULL, but auto-shortlist only checks `scoreWinLikelihood`
+
+### Timeline
+- Jan 14, 07:20 UTC: 29 jobs scraped (no scoreWinLikelihood in code)
+- Jan 15, 12:08 UTC: Commit `61aac4e` added scoreWinLikelihood to DB writes
+- Jan 15, 18:39 UTC: 69 jobs scraped with proper scores
+
+### Fixes Applied
+1. **Manual shortlist button** - Added star button to job cards (card + table view)
+2. **API support** - Added `isShortlisted` to PATCH `/api/jobs/[id]` schema
+
+### Pending
+- Backfill 29 old jobs: set `scoreWinLikelihood = fitScore`
+- Auto-shortlist 7 jobs with fitScore >= 80%
+
+---
+
 ## Next Steps
 
+### P0 - Critical (Shortlist Fix)
+1. **Backfill old jobs** - Set `scoreWinLikelihood = fitScore` for 29 NULL jobs
+2. **Auto-shortlist** - 7 jobs with fitScore >= 80%
+3. **Commit UI changes** - Manual shortlist button
+
 ### P1 - High Priority
-1. **Persist daily counters to database** - Currently only in chrome.storage
-2. **Investigate long job titles** - Some exceed 2000 chars
-3. **GraphQL interception enhancement** - Parse captured data for richer info
+4. **Persist daily counters to database** - Currently only in chrome.storage
+5. **Investigate multi-score algorithm** - May be too conservative (max 74% vs 90% fitScore)
 
 ### P2 - Medium Priority
-4. Add isRefresh flag to enrichment
-5. Deduplicate within DISCOVERY_COMPLETE batch
-6. Store SCRAPE_BLOCKED events
-7. Test ERROR display on frontend
+6. GraphQL interception enhancement
+7. Add isRefresh flag to enrichment
+8. Deduplicate within DISCOVERY_COMPLETE batch
 
 ### P3 - Nice to Have
-8. Add "reason" to JOB_EXPIRED status
-9. Transaction/rollback for multi-job operations
+9. Add "reason" to JOB_EXPIRED status
+10. Transaction/rollback for multi-job operations
 
 ---
 

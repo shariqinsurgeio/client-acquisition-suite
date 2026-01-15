@@ -353,6 +353,45 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
     }, 60000);
   }, [socket, extensionConnected, updatingJobIds]);
 
+  // Handle manual shortlist toggle
+  const handleToggleShortlist = useCallback(async (job: Job) => {
+    const newShortlistStatus = !job.meta.isShortlisted;
+
+    try {
+      const response = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isShortlisted: newShortlistStatus }),
+      });
+
+      if (!response.ok) {
+        console.error("[JobFeed] Failed to toggle shortlist:", await response.text());
+        return;
+      }
+
+      const updatedJob = await response.json();
+      console.log("[JobFeed] Shortlist toggled:", job.id, "→", newShortlistStatus);
+
+      // Update local state
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === job.id
+            ? {
+                ...j,
+                meta: {
+                  ...j.meta,
+                  isShortlisted: updatedJob.isShortlisted,
+                  shortlistedAt: updatedJob.shortlistedAt ? new Date(updatedJob.shortlistedAt) : undefined,
+                },
+              }
+            : j
+        )
+      );
+    } catch (error) {
+      console.error("[JobFeed] Error toggling shortlist:", error);
+    }
+  }, []);
+
   // Render job card (list view)
   const renderJobCard = (job: Job, index: number) => (
     <div
@@ -427,6 +466,21 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
                 updatingJobIds.has(job.id) && "animate-spin"
               )} />
               {updatingJobIds.has(job.id) ? "Updating..." : "Update Job"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleShortlist(job);
+              }}
+              className={cn(
+                "cursor-pointer focus:bg-zinc-800",
+                job.meta.isShortlisted
+                  ? "text-yellow-400 focus:text-yellow-400"
+                  : "text-zinc-100 focus:text-zinc-100"
+              )}
+            >
+              <Star className={cn("h-4 w-4 mr-2", job.meta.isShortlisted && "fill-current")} />
+              {job.meta.isShortlisted ? "Remove from Shortlist" : "Add to Shortlist"}
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-zinc-700" />
             <DropdownMenuItem className="cursor-pointer text-red-400 focus:text-red-400 focus:bg-zinc-800">
@@ -660,6 +714,23 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
                     title="Update Job"
                   >
                     <RefreshCw className={cn("h-3 w-3", updatingJobIds.has(job.id) && "animate-spin")} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      "h-6 w-6",
+                      job.meta.isShortlisted
+                        ? "text-yellow-400 hover:text-yellow-300"
+                        : "text-zinc-500 hover:text-yellow-400"
+                    )}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleShortlist(job);
+                    }}
+                    title={job.meta.isShortlisted ? "Remove from Shortlist" : "Add to Shortlist"}
+                  >
+                    <Star className={cn("h-3 w-3", job.meta.isShortlisted && "fill-current")} />
                   </Button>
                   <Button
                     variant="ghost"
