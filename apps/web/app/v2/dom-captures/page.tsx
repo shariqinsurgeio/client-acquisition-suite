@@ -18,7 +18,7 @@ import {
   ExternalLink
 } from "lucide-react";
 
-// Required page types for comprehensive DOM coverage
+// Required page types for comprehensive DOM coverage (based on Firecrawl analysis + actual URLs)
 const REQUIRED_PAGE_TYPES = [
   {
     type: "job-list-best-match",
@@ -49,16 +49,23 @@ const REQUIRED_PAGE_TYPES = [
     description: "Individual job - client info, full description",
   },
   {
+    type: "job-detail-apply",
+    label: "Job Application Page",
+    url: "https://www.upwork.com/nx/proposals/job/~02xxxxxxxxx/apply/",
+    priority: "high",
+    description: "Application form - click 'Apply Now' on any job to reach this page",
+  },
+  {
     type: "profile-stats",
     label: "Profile Stats",
-    url: "https://www.upwork.com/freelancers/settings/my-stats",
+    url: "https://www.upwork.com/nx/my-stats/",
     priority: "high",
     description: "Connects balance, proposals count",
   },
   {
     type: "job-list-saved",
     label: "Saved Jobs",
-    url: "https://www.upwork.com/nx/search/jobs/saved",
+    url: "https://www.upwork.com/nx/search/jobs/saved/",
     priority: "medium",
     description: "User's saved jobs list",
   },
@@ -68,6 +75,20 @@ const REQUIRED_PAGE_TYPES = [
     url: "https://www.upwork.com/nx/proposals/",
     priority: "medium",
     description: "Active proposals tracking",
+  },
+  {
+    type: "best-matches",
+    label: "Best Matches Feed",
+    url: "https://www.upwork.com/nx/find-work/best-matches",
+    priority: "high",
+    description: "Alternative best matches view",
+  },
+  {
+    type: "messages",
+    label: "Messages Inbox",
+    url: "https://www.upwork.com/nx/messages/",
+    priority: "low",
+    description: "Client conversations (capture when you have messages)",
   },
 ] as const;
 

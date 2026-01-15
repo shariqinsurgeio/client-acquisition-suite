@@ -10,12 +10,27 @@ interface ScrapeProgress {
     jobsFound?: number;
 }
 
+interface SocketError {
+    message: string;
+    timestamp: Date;
+}
+
+interface ShortlistedJob {
+    jobId: string;
+    title: string;
+    score: number;
+    timestamp: Date;
+}
+
 interface SocketContextType {
     socket: Socket | null;
     isConnected: boolean;
     extensionStatus: "ONLINE" | "OFFLINE";
     extensionInstalled: boolean;
     scrapeProgress: ScrapeProgress | null;
+    lastError: SocketError | null;
+    recentShortlisted: ShortlistedJob[];
+    clearError: () => void;
 }
 
 const SocketContext = createContext<SocketContextType>({
@@ -24,6 +39,9 @@ const SocketContext = createContext<SocketContextType>({
     extensionStatus: "OFFLINE",
     extensionInstalled: false,
     scrapeProgress: null,
+    lastError: null,
+    recentShortlisted: [],
+    clearError: () => {},
 });
 
 export const useSocket = () => useContext(SocketContext);
@@ -35,9 +53,13 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
     const [extensionStatus, setExtensionStatus] = useState<"ONLINE" | "OFFLINE">("OFFLINE");
     const [extensionInstalled, setExtensionInstalled] = useState(false);
     const [scrapeProgress, setScrapeProgress] = useState<ScrapeProgress | null>(null);
+    const [lastError, setLastError] = useState<SocketError | null>(null);
+    const [recentShortlisted, setRecentShortlisted] = useState<ShortlistedJob[]>([]);
     const tokenSentRef = useRef(false);
     const socketRef = useRef<Socket | null>(null);
     const isConnectingRef = useRef(false);
+
+    const clearError = () => setLastError(null);
 
     // Socket connection effect
     useEffect(() => {
@@ -107,6 +129,36 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
                             setScrapeProgress(null);
                         }, 3000);
                     }
+                });
+
+                // Listen for server errors (validation failures, etc.)
+                socketInstance.on("ERROR", (data: { message: string }) => {
+                    console.error("[Socket] Server error:", data.message);
+                    if (!isMounted) return;
+                    setLastError({
+                        message: data.message,
+                        timestamp: new Date(),
+                    });
+                    // Auto-clear error after 10 seconds
+                    setTimeout(() => {
+                        setLastError(null);
+                    }, 10000);
+                });
+
+                // Listen for auto-shortlisted jobs (high-potential jobs)
+                socketInstance.on("JOB_SHORTLISTED", (data: { job: { id: string; title: string; fitScore: number } }) => {
+                    console.log("[Socket] Job auto-shortlisted:", data.job.title);
+                    if (!isMounted) return;
+                    setRecentShortlisted(prev => {
+                        const newItem: ShortlistedJob = {
+                            jobId: data.job.id,
+                            title: data.job.title,
+                            score: data.job.fitScore,
+                            timestamp: new Date(),
+                        };
+                        // Keep only last 5 shortlisted notifications
+                        return [newItem, ...prev].slice(0, 5);
+                    });
                 });
 
                 socketInstance.on("connect_error", async (err) => {
@@ -265,7 +317,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
     }, [isSignedIn, extensionInstalled, getToken]);
 
     return (
-        <SocketContext.Provider value={{ socket, isConnected, extensionStatus, extensionInstalled, scrapeProgress }}>
+        <SocketContext.Provider value={{ socket, isConnected, extensionStatus, extensionInstalled, scrapeProgress, lastError, recentShortlisted, clearError }}>
             {children}
         </SocketContext.Provider>
     );

@@ -1,6 +1,6 @@
 # Client Acquisition Suite - Progress Tracker
 
-**Last Updated:** 2026-01-14
+**Last Updated:** 2026-01-15
 
 ## Key Documentation Files
 - `CLAUDE.md` - Claude Code instructions (always read first)
@@ -365,12 +365,175 @@ Implemented the full discovery-to-enrichment pipeline with user-configurable sea
 
 ---
 
-## Next Steps
+## Session Changes (Jan 15, 2026)
 
-1. Test the complete discovery-enrichment pipeline end-to-end
-2. Verify keywords are fetched from Settings and used in search URLs
-3. Verify two-pass scoring correctly filters and shortlists jobs
-4. Continue with Phase 8 (Production Hardening) as per GRANDMASTER_PLAN.md
+### Firecrawl Analysis Integration ✅ COMPLETED
+
+Integrated comprehensive improvements from the Firecrawl analysis documents:
+
+**Git Details:**
+- Rollback checkpoint: `61aac4e` (commit before Firecrawl changes)
+- Command to rollback: `git checkout 61aac4e`
+- Changes are currently uncommitted (staged for review)
+- Modified files:
+  - `apps/extension/background.ts`
+  - `apps/web/app/v2/dom-captures/page.tsx`
+  - `apps/web/prisma/schema.prisma`
+- New migration: `20260115120915_add_job_activity_and_client_fields`
+
+**1. Prisma Schema Enhancements** ✅
+- Added job detail fields: `jobType`, `budget`, `budgetMin`, `budgetMax`, `experienceLevel`, `projectLength`, `hoursPerWeek`, `skillsRequired`
+- Added job activity fields: `proposalCount`, `proposalTier`, `interviewingCount`, `invitesSent`, `lastViewedByClient`
+- Added enhanced client fields: `clientMemberSince`, `clientTotalHires`, `clientActiveJobs`, `clientTotalHours`, `clientRating`
+- Added `DomCapture` model for selector development and self-healing
+
+**2. Verified Selector Updates** ✅
+- Updated job list scraper with verified `data-test` attributes from Firecrawl analysis
+- Updated job detail scraper with verified selectors for client data extraction
+- Added fallback selectors for backward compatibility
+
+**3. GraphQL Interception** ✅
+- Added `setupGraphQLInterceptionInjected()` function to intercept `/api/graphql/v1` responses
+- Captures operation names and response data
+- Stores captures in sessionStorage for access by content scripts
+
+**4. Initial State Extraction** ✅
+- Added `extractInitialStateInjected()` function for Angular SSR data extraction
+- Supports `__INITIAL_STATE__`, `__APOLLO_STATE__`, and `TransferState` patterns
+- Extracts pre-rendered job and user data
+
+**5. Rate Limits Updated** ✅
+- Updated `RATE_LIMITS` based on Firecrawl recommendations:
+  - `minPageLoadDelay`: 3000ms (3s minimum between pages)
+  - `maxPagesPerMinute`: 15 (maximum throughput limit)
+  - Added `minBetweenDetailPages`: 4000ms for extra caution on detail visits
+  - Added `humanLikeScrollDelay`: 1500ms and `readTimePerJob`: 800ms
+
+**6. Coverage Tracker Expanded** ✅
+- Added new page types to DOM captures page:
+  - `job-detail-apply`: Application form page
+  - `best-matches`: Alternative best matches feed (`/ab/find-work/best-matches`)
+  - `messages`: Messages inbox
+- Updated page type detection in background.ts for `/ab/find-work` URLs
+
+### Files Modified (Jan 15)
+| File | Changes |
+|------|---------|
+| `apps/web/prisma/schema.prisma` | New job detail fields, activity fields, client fields, DomCapture model |
+| `apps/extension/background.ts` | Verified selectors, GraphQL interception, Initial State extraction, rate limits |
+| `apps/web/app/v2/dom-captures/page.tsx` | Expanded REQUIRED_PAGE_TYPES with new page types |
+
+### DOM Capture Testing & Analysis ✅ COMPLETED
+
+Successfully tested DOM capture system and analyzed all page types:
+
+**Pages Captured (9/10 - 90% coverage):**
+| Page Type | Status | Data Attributes |
+|-----------|--------|-----------------|
+| `job-list-best-match` | ✅ | 965 |
+| `job-list-most-recent` | ✅ | 971 |
+| `job-list-search` | ✅ | 983 |
+| `job-list-saved` | ✅ | 675 |
+| `best-matches` | ✅ | 250 |
+| `job-detail` | ✅ | 164 |
+| `job-detail-apply` | ✅ | 128 |
+| `profile-stats` | ✅ | 211 |
+| `proposals` | ✅ | 125 |
+| `messages` | ⏭️ Skipped (no messages) |
+
+**URL Pattern Fixes Applied:**
+- Fixed job apply URL detection: `/nx/proposals/job/~ID/apply/`
+- Fixed profile stats URL: `/nx/my-stats/`
+- Added `best-matches` as separate page type for `/nx/find-work/best-matches`
+
+**Key Finding: Two Different DOM Structures**
+
+Upwork uses different selectors for different page types:
+
+**Structure 1: `/nx/search/jobs` pages (JobTile pattern)**
+```
+data-test="JobTile"              - Job card container
+data-test="job-tile-title-link"  - Job title
+data-test="JobInfo"              - Budget, level, duration
+data-test="JobInfoClient"        - Client verification, rating
+data-test="JobInfoClientMore"    - Proposals count
+data-test="job-pubilshed-date"   - Posted time
+data-test="experience-level"     - Experience level
+data-test="duration-label"       - Duration
+```
+
+**Structure 2: `/nx/find-work` pages (job-tile-list pattern)**
+```
+data-test="job-tile-list"              - Job list container
+data-test="job-description-text"       - Job title/description
+data-test="job-type"                   - Budget ("Hourly: $50-$100")
+data-test="contractor-tier"            - Experience level
+data-test="proposals"                  - Proposal count
+data-test="client-country"             - Client location
+data-test="client-spendings"           - Client spend
+data-test="payment-verification-status" - Payment verified
+data-test="posted-on"                  - Posted time
+data-test="connects-section"           - Connects cost
+data-test="budget"                     - Fixed price budget
+```
+
+**Structure 3: Job Detail Page**
+```
+data-test="Description"              - Full description
+data-test="client-spend"             - "$11K total spent"
+data-test="client-hourly-rate"       - Avg hourly rate
+data-test="client-location"          - Location
+data-test="client-contract-date"     - Member since
+data-test="client-hires"             - "428 hires, 1 active"
+data-test="client-hours"             - Total hours
+data-test="client-job-posting-stats" - Hire rate, open jobs
+data-test="buyer-rating"             - Client rating
+data-test="job-title"                - Job title
+```
+
+**Structure 4: Profile Stats Page**
+```
+data-test="stats-connects-info"       - "Connects: 90"
+data-test="stats-earnings-amount"     - "$0"
+data-test="stats-job-success"         - Job success score
+data-test="stats-badge-title"         - "Rising talent"
+```
+
+---
+
+## Current Situation (Jan 15, 2026)
+
+**What's Running:**
+- Web app: http://localhost:3000 (running in background)
+- Extension: Built and loaded in Chrome
+
+**What Was Just Completed:**
+1. ✅ DOM Capture system fully tested
+2. ✅ All critical page types captured
+3. ✅ Full analysis of data-test attributes complete
+4. ✅ Identified two different DOM structures (search vs find-work)
+
+**Uncommitted Changes:**
+- `apps/extension/background.ts` - Updated selectors, rate limits, page detection
+- `apps/web/app/v2/dom-captures/page.tsx` - Fixed URLs, added page types
+- `apps/web/prisma/schema.prisma` - New fields + DomCapture model
+- Migration: `20260115120915_add_job_activity_and_client_fields`
+
+---
+
+## Next Steps (When You Return)
+
+### Immediate Priority:
+1. **Update scraper selectors** to handle BOTH page structures:
+   - Add selectors for `/nx/find-work` pages (job-tile-list pattern)
+   - Current scraper only handles `/nx/search/jobs` (JobTile pattern)
+
+2. **Test live scraping** with updated selectors
+
+### Then:
+3. Commit all changes with descriptive message
+4. Test GraphQL interception on live pages
+5. Continue with Phase 8 (Production Hardening)
 
 ---
 
@@ -390,3 +553,14 @@ cd apps/web && npx prisma migrate dev
 # View Prisma Studio
 cd apps/web && npx prisma studio
 ```
+
+---
+
+## Rollback Information
+
+If anything breaks:
+```bash
+git checkout 61aac4e
+```
+
+This will restore to the state before Firecrawl analysis changes.

@@ -36,8 +36,8 @@ const ExtensionConnectSchema = z.object({
 
 const DataIngestSchema = z.object({
   platform: PlatformEnum.default("UNKNOWN"),
-  title: z.string().min(1).max(500).default("No Title"),
-  description: z.string().max(10000).default(""),
+  title: z.string().min(1).default("No Title"), // No max - scraped titles can be long
+  description: z.string().default(""), // No max - descriptions can be very long
   url: z.string().url(),
   budget: z.string().optional(),
   skills: z.array(z.string()).optional(),
@@ -77,8 +77,8 @@ const CmdExecuteSchema = z.object({
 const DiscoveryCompleteSchema = z.object({
   jobs: z.array(z.object({
     url: z.string().url(),
-    title: z.string().max(500).default("No Title"),
-    description: z.string().max(10000).default(""),
+    title: z.string().default("No Title"), // No max - some scraped "titles" include extra text
+    description: z.string().default(""), // No max - descriptions can be very long
     platform: PlatformEnum.default("UPWORK"),
     // Sherlock Fields from list page
     clientName: z.string().max(200).optional().nullable(),
@@ -101,7 +101,7 @@ const DiscoveryCompleteSchema = z.object({
 const EnrichmentCompleteSchema = z.object({
   enrichedJobs: z.array(z.object({
     url: z.string().url(),
-    fullDescription: z.string().max(20000),
+    fullDescription: z.string().max(100000), // Increased from 20000 - some descriptions are very long
     // Additional data from detail page
     skillsRequired: z.array(z.string()).optional().nullable(),
     hasExternalLinks: z.boolean().optional(),
@@ -161,6 +161,7 @@ interface ServerToClientEvents {
   JOB_ENRICHED: (data: { jobId: string; url: string; score: MultiScore; isShortlisted: boolean }) => void;
   JOB_SHORTLISTED: (data: { jobId: string; title: string; score: MultiScore; message: string }) => void;
   SCRAPE_BLOCKED: (data: { signal: string; timestamp: string; action: string; cooldownMinutes?: number; message?: string; dailyCounters?: { jobsScraped: number; detailPagesVisited: number; blocksDetected: number } }) => void;
+  DOM_CAPTURED: (data: { id: string; pageType: string; dataAttributeCount: number; capturedAt: Date }) => void;
 }
 
 interface ClientToServerEvents {
@@ -174,6 +175,7 @@ interface ClientToServerEvents {
   ENRICHMENT_COMPLETE: (data: z.infer<typeof EnrichmentCompleteSchema>) => void;
   CHECK_JOB_URLS: (data: { urls: string[] }, callback: (response: { newUrls: string[]; existingUrls: string[] }) => void) => void;
   SCRAPE_BLOCKED: (data: { signal: string; dailyCounters?: { jobsScraped: number; detailPagesVisited: number; blocksDetected: number } }) => void;
+  DOM_CAPTURE: (data: { pageUrl: string; pageType: string; dataAttributes: Array<{ selector: string; attributes: Record<string, string>; innerText?: string }>; urlPattern?: string; platform?: string; jobCardSample?: string; clientSection?: string; fullStructure?: unknown }) => void;
 }
 
 interface JobPayload {
@@ -1428,6 +1430,48 @@ app.prepare().then(() => {
         });
       } else {
         // No enrichment needed, complete the operation
+        // Update ScrapeOperation directly (not via TASK_UPDATE which doesn't loop back)
+        const scrapeState = getUserScrapeState(userId);
+        if (scrapeState.operationId) {
+          try {
+            const existing = await prisma.scrapeOperation.findUnique({
+              where: { id: scrapeState.operationId },
+            });
+
+            if (existing) {
+              const existingLogs = existing.logs ? JSON.parse(existing.logs) : [];
+              existingLogs.push({
+                timestamp: new Date().toISOString(),
+                message: `Discovery completed: ${jobs.length} jobs found (${newCount} new, ${existingCount} updated)`,
+              });
+
+              await prisma.scrapeOperation.update({
+                where: { id: scrapeState.operationId },
+                data: {
+                  status: "COMPLETED",
+                  jobsFound: jobs.length,
+                  jobsNew: newCount,
+                  jobsUpdated: existingCount,
+                  completedAt: new Date(),
+                  durationMs: Date.now() - existing.startedAt.getTime(),
+                  logs: JSON.stringify(existingLogs),
+                  jobIds: JSON.stringify(scrapeState.jobIds),
+                },
+              });
+
+              console.log(`[DB] Completed scrape operation ${scrapeState.operationId}: ${jobs.length} jobs (${newCount} new, ${existingCount} updated)`);
+            }
+
+            // Reset state
+            scrapeState.operationId = null;
+            scrapeState.jobsNewCount = 0;
+            scrapeState.jobsUpdatedCount = 0;
+            scrapeState.jobIds = [];
+          } catch (err) {
+            console.error("[DB] Failed to complete scrape operation:", err);
+          }
+        }
+
         io.to(`user:${userId}`).emit("TASK_UPDATE", {
           status: "COMPLETED",
           message: `Discovered ${jobs.length} jobs (${qualifyingJobs.length} qualify, none need enrichment)`,
@@ -1551,12 +1595,17 @@ app.prepare().then(() => {
               where: { id: scrapeState.operationId },
               data: {
                 status: "COMPLETED",
+                jobsFound: scrapeState.jobsNewCount + scrapeState.jobsUpdatedCount,
+                jobsNew: scrapeState.jobsNewCount,
+                jobsUpdated: scrapeState.jobsUpdatedCount,
                 completedAt: new Date(),
                 durationMs: Date.now() - existing.startedAt.getTime(),
                 logs: JSON.stringify(existingLogs),
                 jobIds: JSON.stringify(scrapeState.jobIds),
               },
             });
+
+            console.log(`[DB] Completed scrape operation ${scrapeState.operationId} after enrichment: ${scrapeState.jobIds.length} jobs`);
           }
         } catch (err) {
           console.error("[DB] Failed to complete scrape operation:", err);
@@ -1597,6 +1646,70 @@ app.prepare().then(() => {
       }
     });
   });
+
+  // =============================================================================
+  // STUCK OPERATION CLEANUP
+  // =============================================================================
+
+  /**
+   * Mark stuck ScrapeOperations as TIMEOUT
+   * Operations stuck in RUNNING state for > 10 minutes are considered failed
+   */
+  let isCleanupRunning = false;
+
+  async function cleanupStuckOperations() {
+    // Prevent concurrent cleanup runs (can cause connection pool exhaustion)
+    if (isCleanupRunning) {
+      console.log("[Cleanup] Skipping - previous cleanup still running");
+      return;
+    }
+
+    isCleanupRunning = true;
+    const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+    const cutoffTime = new Date(Date.now() - TIMEOUT_MS);
+
+    try {
+      const stuckOps = await prisma.scrapeOperation.findMany({
+        where: {
+          status: "RUNNING",
+          startedAt: { lt: cutoffTime },
+        },
+        take: 10, // Limit to prevent large queries
+      });
+
+      if (stuckOps.length > 0) {
+        console.log(`[Cleanup] Found ${stuckOps.length} stuck operations, marking as TIMEOUT`);
+
+        for (const op of stuckOps) {
+          try {
+            await prisma.scrapeOperation.update({
+              where: { id: op.id },
+              data: {
+                status: "TIMEOUT",
+                completedAt: new Date(),
+                errorMessage: `Operation timed out after ${TIMEOUT_MS / 60000} minutes`,
+                durationMs: Date.now() - op.startedAt.getTime(),
+              },
+            });
+            console.log(`[Cleanup] Marked operation ${op.id} as TIMEOUT (started ${op.startedAt.toISOString()})`);
+          } catch (updateErr) {
+            console.error(`[Cleanup] Failed to update operation ${op.id}:`, updateErr instanceof Error ? updateErr.message : updateErr);
+          }
+        }
+      }
+    } catch (err) {
+      // Log error but don't crash - connection pool issues are recoverable
+      console.error("[Cleanup] Failed to cleanup stuck operations:", err instanceof Error ? err.message : err);
+    } finally {
+      isCleanupRunning = false;
+    }
+  }
+
+  // Run cleanup on server startup (delayed to let connections warm up)
+  setTimeout(cleanupStuckOperations, 5000);
+
+  // Run cleanup every 5 minutes
+  setInterval(cleanupStuckOperations, 5 * 60 * 1000);
 
   // =============================================================================
   // START SERVER

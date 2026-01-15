@@ -782,11 +782,28 @@ async function scrapeSourceForDiscovery(platform: string, sourceUrl: string): Pr
   }
 
   // Navigate and wait
+  // Search pages (with query params) need more time to load results
+  const isSearchPage = sourceUrl.includes('/search/jobs');
+  const loadWaitTime = isSearchPage ? 6000 : 4000;
+
   if (!existingTab) {
     await new Promise(resolve => setTimeout(resolve, 3000));
   } else {
     await chrome.tabs.update(tabId, { url: sourceUrl });
-    await new Promise(resolve => setTimeout(resolve, 4000));
+    console.log(`[CAS] Waiting ${loadWaitTime}ms for page load (search=${isSearchPage})...`);
+    await new Promise(resolve => setTimeout(resolve, loadWaitTime));
+  }
+
+  // Inject GraphQL interceptor to capture any API calls during scrolling
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: setupGraphQLInterceptionInjected,
+      world: "MAIN", // Run in page context to intercept fetch
+    });
+    console.log("[CAS] GraphQL interceptor injected");
+  } catch (err) {
+    console.warn("[CAS] Failed to inject GraphQL interceptor:", err);
   }
 
   // Fetch selectors
@@ -812,11 +829,29 @@ async function scrapeSourceForDiscovery(platform: string, sourceUrl: string): Pr
     }
   }
 
-  // Execute scraping script
+  // Scroll to trigger lazy-loaded content (especially important for search pages)
+  if (isSearchPage) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          console.log("[CAS] Scrolling to trigger lazy load...");
+          window.scrollTo(0, 500);
+          setTimeout(() => window.scrollTo(0, 0), 500);
+        },
+      });
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for content to load
+      console.log("[CAS] Scroll + wait complete for search page");
+    } catch (err) {
+      console.warn("[CAS] Scroll failed:", err);
+    }
+  }
+
+  // Execute scraping script (using multi-strategy function for both page types)
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: scrapeJobsFromPage,
-    args: [selectorConfig],
+    func: scrapeJobsFromPageInjected,
+    // No args needed - selectors are built into the function
   });
 
   const scrapeResult = results[0]?.result as ScrapeResult | undefined;
@@ -824,6 +859,22 @@ async function scrapeSourceForDiscovery(platform: string, sourceUrl: string): Pr
   if (!scrapeResult || !scrapeResult.jobs || scrapeResult.jobs.length === 0) {
     console.log(`[CAS] No jobs found at ${sourceUrl}`);
     return [];
+  }
+
+  // Retrieve any GraphQL captures made during page load/scrolling
+  try {
+    const gqlResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: getGraphQLCapturesInjected,
+      world: "MAIN",
+    });
+    const captures = gqlResults[0]?.result as GraphQLCaptureResult[] | undefined;
+    if (captures && captures.length > 0) {
+      console.log(`[CAS] GraphQL captures: ${captures.length} operations`);
+      captures.forEach(c => console.log(`  - ${c.operationName}: ${JSON.stringify(c.data).substring(0, 200)}...`));
+    }
+  } catch (err) {
+    console.warn("[CAS] Failed to retrieve GraphQL captures:", err);
   }
 
   console.log(`[CAS] Scraped ${scrapeResult.jobs.length} jobs from ${sourceUrl}`);
@@ -3064,7 +3115,15 @@ function scrapeJobsFromPageInjected() {
   });
 
   console.log(`[CAS Scraper] Successfully scraped ${jobs.length} jobs`);
-  return jobs;
+
+  // Return in ScrapeResult format for compatibility
+  return {
+    jobs,
+    debug: `VERSION:V4-MULTISTRATEGY|cards:${jobs.length}`,
+    url: window.location.href,
+    cardsFound: jobs.length,
+    usedSelector: 'multi-strategy',
+  };
 }
 
 // Extract profile stats from Upwork page (connects, proposals)
@@ -3221,6 +3280,17 @@ function setupGraphQLInterceptionInjected(): void {
   };
 
   console.log("[CAS GraphQL] Fetch interceptor installed");
+}
+
+// Function to retrieve captured GraphQL data (injected into page)
+function getGraphQLCapturesInjected(): GraphQLCaptureResult[] {
+  try {
+    const captures = JSON.parse(sessionStorage.getItem('__CAS_GRAPHQL_CAPTURES__') || '[]');
+    console.log(`[CAS GraphQL] Retrieved ${captures.length} captures`);
+    return captures;
+  } catch {
+    return [];
+  }
 }
 
 // =============================================================================
@@ -3643,7 +3713,9 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             func: scrapeJobsFromPageInjected,
           });
 
-          const jobs = results[0]?.result || [];
+          const scrapeResult = results[0]?.result;
+          // Handle both array format (old) and ScrapeResult format (new)
+          const jobs = Array.isArray(scrapeResult) ? scrapeResult : (scrapeResult?.jobs || []);
           console.log(`[CAS] Scraped ${jobs.length} jobs from current page`);
 
           // Send jobs to server

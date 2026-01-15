@@ -19,6 +19,23 @@ model Job {
   updatedAt       DateTime  @updatedAt
   lastRefreshedAt DateTime? // Last time job data was refreshed from source
 
+  // === Job Details (from analysis) ===
+  jobType               String?  // "hourly" | "fixed"
+  budget                Float?   // Fixed price amount or null
+  budgetMin             Float?   // Hourly min rate
+  budgetMax             Float?   // Hourly max rate
+  experienceLevel       String?  // "entry" | "intermediate" | "expert"
+  projectLength         String?  // "Less than 1 week", "1-3 months", etc.
+  hoursPerWeek          String?  // "Less than 30 hrs/week", etc.
+  skillsRequired        String?  @db.Text // JSON array of skills
+
+  // === Job Activity (from data-test selectors) ===
+  proposalCount         Int?     // Number of proposals submitted
+  proposalTier          String?  // "Less than 5", "5 to 10", "10 to 15", etc.
+  interviewingCount     Int?     // Number being interviewed
+  invitesSent           Int?     // Number of invites sent by client
+  lastViewedByClient    String?  // "2 hours ago" - when client last viewed
+
   // === Client Data (The "Sherlock" Fields) ===
   clientName            String?  // Found in reviews (e.g., "Masood")
   clientLocation        String?  // City/Region for P.S. banter
@@ -28,6 +45,11 @@ model Job {
   clientHireRate        Float?   // Hire rate 0-100
   clientPaymentVerified Boolean  @default(false)
   clientReviewCount     Int?     // Number of reviews
+  clientMemberSince     String?  // "Member since Jan 2020"
+  clientTotalHires      Int?     // Total freelancers hired
+  clientActiveJobs      Int?     // Currently open jobs
+  clientTotalHours      Int?     // Total hours worked with freelancers
+  clientRating          Float?   // 1-5 star rating
 
   // === Meta Data (Strategic Metrics) ===
   fitScore              Int?     // 0-100 auto-calculated (legacy, use scoreWinLikelihood)
