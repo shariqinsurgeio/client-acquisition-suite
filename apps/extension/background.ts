@@ -93,18 +93,24 @@ const SCRAPING_MODES = {
 // Default to conservative mode for safety
 let currentScrapingMode: ScrapingMode = "conservative";
 
-// Rate limit state
+// Rate limit state (based on Firecrawl analysis recommendations)
 const RATE_LIMITS = {
-  // Per-action delays (milliseconds)
-  minPageLoadDelay: 4000,
-  maxPageLoadDelay: 6000,
-  // Session limits
+  // Per-action delays (milliseconds) - 3s min per Firecrawl analysis
+  minPageLoadDelay: 3000,      // Minimum 3 seconds between page loads
+  maxPageLoadDelay: 5000,      // Max 5 seconds for natural variation
+  minBetweenDetailPages: 4000, // Extra delay for detail page visits
+  maxBetweenDetailPages: 7000,
+  // Throughput limits (15 pages/min per Firecrawl analysis)
+  maxPagesPerMinute: 15,       // Maximum pages to load per minute
   maxJobsPerSession: 50,
   maxPagesPerSource: 3,
-  sessionCooldownMs: 300000,  // 5 min cooldown between full scrapes
+  sessionCooldownMs: 300000,   // 5 min cooldown between full scrapes
   // Daily limits (account protection)
   maxJobsPerDay: 200,
   maxDetailVisitsPerDay: 30,
+  // Anti-detection patterns
+  humanLikeScrollDelay: 1500,  // Delay before scrolling after page load
+  readTimePerJob: 800,         // Simulated reading time per job card
 };
 
 // Cooldown state
@@ -1809,26 +1815,45 @@ interface JobDetailResult {
   title?: string;
   description?: string;
   budget?: string;
-  clientName?: string;
-  clientLocation?: string;
-  clientCountry?: string;
-  clientTotalSpent?: number;
-  clientAvgHourly?: number;
-  clientHireRate?: number;
-  clientPaymentVerified?: boolean;
-  clientReviewCount?: number;
-  connectsCost?: number;
-  postedAgo?: string;
-  hasExternalLinks?: boolean;
-  skillsRequired?: string[];
+
+  // Job details
   jobType?: string;
   experienceLevel?: string;
   projectLength?: string;
+  hoursPerWeek?: string;
+  skillsRequired?: string[];
+
+  // Job activity (NEW from Firecrawl analysis)
+  proposalCount?: number;
+  proposalTier?: string;
+  interviewingCount?: number;
+  invitesSent?: number;
+  lastViewedByClient?: string;
+
+  // Client info (enhanced from analysis)
+  clientName?: string;
+  clientLocation?: string;
+  clientCountry?: string;
+  clientMemberSince?: string;
+  clientTotalSpent?: number;
+  clientTotalHires?: number;
+  clientActiveJobs?: number;
+  clientAvgHourly?: number;
+  clientTotalHours?: number;
+  clientHireRate?: number;
+  clientRating?: number;
+  clientPaymentVerified?: boolean;
+  clientReviewCount?: number;
+
+  // Meta
+  connectsCost?: number;
+  postedAgo?: string;
+  hasExternalLinks?: boolean;
 }
 
 // Content script function to extract data from job detail page
 function scrapeJobDetailPage(): JobDetailResult | null {
-  const VERSION = "DETAIL-V4-2026-01-14";
+  const VERSION = "DETAIL-V5-2026-01-15";
 
   try {
     console.log(`[CAS Detail Scraper ${VERSION}] Running on:`, window.location.href);
@@ -1836,61 +1861,134 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     console.log(`[CAS Detail Scraper ${VERSION}] Body exists:`, !!document.body);
     console.log(`[CAS Detail Scraper ${VERSION}] Body text length:`, document.body?.innerText?.length || 0);
 
+    // === VERIFIED SELECTORS FROM DOM CAPTURE ANALYSIS (Jan 15, 2026) ===
+    // These are the EXACT data-test attributes found on live Upwork job detail pages
+    const DETAIL_SELECTORS = {
+      // Main content
+      title: '[data-test="job-title"], h1.job-title, header h1, h1',
+      description: '[data-test="Description"], .job-details-content, [data-test="job-description"]',
+
+      // Job details sidebar
+      budget: '[data-test="budget"], .budget-amount',
+      projectLength: '[data-test="date"], [data-test="duration"]',  // "Jan 2026 - Jan 2026"
+      experienceLevel: '[data-test="expertise"], [data-test="contractor-tier"]',
+      hoursPerWeek: '[data-test="stats"]',
+      jobType: '[data-test="fixed-price"], [data-test="stats"]',
+
+      // Client card (VERIFIED from DOM capture - about-client-container)
+      clientSection: '[data-test="about-client-container"], [data-test="about-client"], .client-info',
+      clientName: '[data-test="client-name"]',
+      clientLocation: '[data-test="client-location"]',  // "United Kingdom Carnassarie"
+      clientMemberSince: '[data-test="client-contract-date"]',  // "Member since Nov 19, 2024"
+      clientTotalSpent: '[data-test="client-spend"]',  // "$11K total spent"
+      clientTotalHires: '[data-test="client-hires"]',  // "428 hires, 1 active"
+      clientActiveJobs: '[data-test="client-job-posting-stats"]',  // "385 jobs posted, 92% hire rate, 19 open jobs"
+      clientHireRate: '[data-test="client-job-posting-stats"]',  // Parse "92% hire rate" from this
+      clientAvgHourlyPaid: '[data-test="client-hourly-rate"]',  // "$9.52 /hr avg hourly rate paid"
+      clientTotalHours: '[data-test="client-hours"]',  // "150 hours"
+      clientRating: '[data-test="buyer-rating"]',  // "Rating is 5.0 out of 5"
+      paymentVerified: '[data-test="UpCVerifiedBadge"], [data-test="payment-verified"]',
+
+      // Client work history
+      workHistory: '[data-test="work-history-title"]',  // "Client's recent history (50)"
+
+      // Activity metrics (may not be on detail page - more on job cards)
+      proposals: '[data-test="proposals"], .proposals-count',
+      interviewing: '[data-test="interviewing"]',
+      invitesSent: '[data-test="invites-sent"]',
+      lastViewed: '[data-test="last-viewed"]',
+
+      // Skills
+      skills: '[data-test="TokenClamp"] span, [data-test="skill"], [data-test="token"], .skill-badge',
+
+      // Connects
+      connects: '[data-test="connects-required"], [data-test="connects-to-apply"]',
+
+      // Apply button (confirms job is active)
+      applyButton: '[data-test="submit-proposal-button"]',
+
+      // Posted time
+      postedTime: '[data-test="posted-on"], [data-test="job-posted"], time',
+    };
+
     // Check if job is expired/removed
     const pageText = document.body?.innerText?.toLowerCase() || "";
-  const expiredIndicators = [
-    "this job is no longer available",
-    "job not found",
-    "this job has been removed",
-    "job is closed",
-    "no longer accepting proposals",
-    "position has been filled",
-  ];
+    const expiredIndicators = [
+      "this job is no longer available",
+      "job not found",
+      "this job has been removed",
+      "job is closed",
+      "no longer accepting proposals",
+      "position has been filled",
+    ];
 
-  for (const indicator of expiredIndicators) {
-    if (pageText.includes(indicator)) {
-      console.log(`[CAS Detail Scraper ${VERSION}] Job expired: found "${indicator}"`);
-      return { expired: true };
+    for (const indicator of expiredIndicators) {
+      if (pageText.includes(indicator)) {
+        console.log(`[CAS Detail Scraper ${VERSION}] Job expired: found "${indicator}"`);
+        return { expired: true };
+      }
     }
-  }
 
-  // Helper to get text from first matching selector
-  const getText = (selectors: string[]): string => {
-    for (const sel of selectors) {
-      try {
-        const el = document.querySelector(sel);
-        if (el?.textContent?.trim()) {
-          return el.textContent.trim();
-        }
-      } catch { /* invalid selector */ }
-    }
-    return "";
-  };
+    // Helper to get text from first matching selector
+    const getText = (selectors: string[] | string): string => {
+      const selectorList = Array.isArray(selectors) ? selectors : selectors.split(', ');
+      for (const sel of selectorList) {
+        try {
+          const el = document.querySelector(sel.trim());
+          if (el?.textContent?.trim()) {
+            return el.textContent.trim();
+          }
+        } catch { /* invalid selector */ }
+      }
+      return "";
+    };
 
-  // Helper to parse money values
-  const parseMoney = (text: string): number | undefined => {
-    if (!text) return undefined;
-    const cleaned = text.replace(/[,$K+]/gi, (m) => m.toLowerCase() === "k" ? "000" : "");
-    const match = cleaned.match(/(\d+(?:\.\d+)?)/);
-    return match ? parseFloat(match[1]) : undefined;
-  };
+    // Helper to get text from element within a parent
+    const getTextIn = (parent: Element | null, selectors: string): string => {
+      if (!parent) return "";
+      const selectorList = selectors.split(', ');
+      for (const sel of selectorList) {
+        try {
+          const el = parent.querySelector(sel.trim());
+          if (el?.textContent?.trim()) {
+            return el.textContent.trim();
+          }
+        } catch { /* invalid selector */ }
+      }
+      return "";
+    };
 
-  // Helper to parse percentage
-  const parsePercent = (text: string): number | undefined => {
-    const match = text.match(/(\d+(?:\.\d+)?)\s*%/);
-    return match ? parseFloat(match[1]) : undefined;
-  };
+    // Helper to parse money values (handles $50K+, $1M, etc.)
+    const parseMoney = (text: string): number | undefined => {
+      if (!text) return undefined;
+      const match = text.match(/\$?\s*([\d,.]+)\s*([KMB])?/i);
+      if (match) {
+        let amount = parseFloat(match[1].replace(/,/g, ''));
+        const suffix = match[2]?.toUpperCase();
+        if (suffix === 'K') amount *= 1000;
+        if (suffix === 'M') amount *= 1000000;
+        if (suffix === 'B') amount *= 1000000000;
+        return amount;
+      }
+      return undefined;
+    };
 
-  // Extract title
-  console.log(`[CAS Detail Scraper ${VERSION}] Extracting title...`);
-  const title = getText([
-    'h1[data-test="job-title"]',
-    'h1.job-title',
-    'header h1',
-    '.job-details-header h1',
-    'h1',
-  ]);
-  console.log(`[CAS Detail Scraper ${VERSION}] Title found:`, title?.slice(0, 50));
+    // Helper to parse percentage
+    const parsePercent = (text: string): number | undefined => {
+      const match = text.match(/(\d+(?:\.\d+)?)\s*%/);
+      return match ? parseFloat(match[1]) : undefined;
+    };
+
+    // Helper to parse integers
+    const parseInt2 = (text: string): number | undefined => {
+      const match = text.match(/(\d+)/);
+      return match ? parseInt(match[1], 10) : undefined;
+    };
+
+    // Extract title using verified selectors
+    console.log(`[CAS Detail Scraper ${VERSION}] Extracting title...`);
+    const title = getText(DETAIL_SELECTORS.title);
+    console.log(`[CAS Detail Scraper ${VERSION}] Title found:`, title?.slice(0, 50));
 
   // Try to expand "Read more" / "Show more" buttons to get full description
   console.log(`[CAS Detail Scraper ${VERSION}] Looking for expand buttons...`);
@@ -1981,34 +2079,37 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     }
   }
 
-  // Extract budget
-  const budgetText = getText([
-    '[data-test="budget"]',
-    '[data-test="job-budget"]',
-    '.budget',
-    '[class*="budget"]',
-  ]);
+  // Extract budget using verified selectors
+  const budgetText = getText(DETAIL_SELECTORS.budget);
 
-  // Extract client info
-  const clientSection = document.querySelector('[data-test="about-client"], .client-info, [class*="client"]');
+  // Extract client info using verified selectors from Firecrawl analysis
+  const clientSection = document.querySelector(DETAIL_SELECTORS.clientSection);
 
+  let clientName = "";
   let clientLocation = "";
   let clientCountry = "";
+  let clientMemberSince = "";
   let clientTotalSpent: number | undefined;
   let clientAvgHourly: number | undefined;
   let clientHireRate: number | undefined;
   let clientPaymentVerified = false;
   let clientReviewCount: number | undefined;
+  let clientTotalHires: number | undefined;
+  let clientActiveJobs: number | undefined;
+  let clientTotalHours: number | undefined;
+  let clientRating: number | undefined;
 
   if (clientSection) {
     const clientText = clientSection.textContent || "";
 
-    // Location
-    const locationEl = clientSection.querySelector('[data-test="client-location"], [class*="location"]');
-    clientLocation = locationEl?.textContent?.trim() || "";
+    // Client name (verified selector)
+    clientName = getTextIn(clientSection, DETAIL_SELECTORS.clientName);
+
+    // Location (verified selector)
+    clientLocation = getTextIn(clientSection, DETAIL_SELECTORS.clientLocation);
 
     // Extract country from location
-    const countries = ["United States", "USA", "US", "United Kingdom", "UK", "Canada", "Australia", "Germany", "India", "Pakistan", "Philippines"];
+    const countries = ["United States", "USA", "US", "United Kingdom", "UK", "Canada", "Australia", "Germany", "India", "Pakistan", "Philippines", "Netherlands", "France", "Spain", "Italy", "Brazil"];
     const locLower = clientLocation.toLowerCase();
     for (const country of countries) {
       if (locLower.includes(country.toLowerCase())) {
@@ -2020,79 +2121,114 @@ function scrapeJobDetailPage(): JobDetailResult | null {
       clientCountry = clientLocation.split(",").pop()?.trim() || "";
     }
 
-    // Total spent
-    const spentMatch = clientText.match(/\$?([\d,]+(?:\.\d+)?[KMB]?)\s*(?:spent|total)/i);
-    if (spentMatch) {
-      clientTotalSpent = parseMoney(spentMatch[1]);
-    }
+    // Member since (NEW - verified selector)
+    clientMemberSince = getTextIn(clientSection, DETAIL_SELECTORS.clientMemberSince);
 
-    // Avg hourly
-    const hourlyMatch = clientText.match(/\$?([\d.]+)\s*\/\s*hr/i);
+    // Total spent (verified selector)
+    const spentText = getTextIn(clientSection, DETAIL_SELECTORS.clientTotalSpent) ||
+                      clientText.match(/\$?([\d,]+(?:\.\d+)?[KMB]?)\s*(?:spent|total)/i)?.[0] || "";
+    clientTotalSpent = parseMoney(spentText);
+
+    // Total hires (NEW - verified selector)
+    const hiresText = getTextIn(clientSection, DETAIL_SELECTORS.clientTotalHires);
+    clientTotalHires = parseInt2(hiresText);
+
+    // Active jobs (NEW - verified selector)
+    const activeJobsText = getTextIn(clientSection, DETAIL_SELECTORS.clientActiveJobs);
+    clientActiveJobs = parseInt2(activeJobsText);
+
+    // Hire rate (verified selector)
+    const hireRateText = getTextIn(clientSection, DETAIL_SELECTORS.clientHireRate) ||
+                         clientText.match(/(\d+(?:\.\d+)?)\s*%?\s*hire\s*rate/i)?.[0] || "";
+    clientHireRate = parsePercent(hireRateText);
+
+    // Avg hourly paid (verified selector)
+    const avgHourlyText = getTextIn(clientSection, DETAIL_SELECTORS.clientAvgHourlyPaid) ||
+                          clientText.match(/\$?([\d.]+)\s*\/\s*hr/i)?.[0] || "";
+    const hourlyMatch = avgHourlyText.match(/\$?([\d.]+)/);
     if (hourlyMatch) {
       clientAvgHourly = parseFloat(hourlyMatch[1]);
     }
 
-    // Hire rate
-    const hireMatch = clientText.match(/(\d+(?:\.\d+)?)\s*%?\s*hire\s*rate/i);
-    if (hireMatch) {
-      clientHireRate = parseFloat(hireMatch[1]);
+    // Total hours (NEW - verified selector)
+    const totalHoursText = getTextIn(clientSection, DETAIL_SELECTORS.clientTotalHours);
+    clientTotalHours = parseInt2(totalHoursText);
+
+    // Client rating (NEW - verified selector)
+    const ratingText = getTextIn(clientSection, DETAIL_SELECTORS.clientRating);
+    const ratingMatch = ratingText.match(/([\d.]+)/);
+    if (ratingMatch) {
+      clientRating = parseFloat(ratingMatch[1]);
     }
 
-    // Payment verified
-    clientPaymentVerified = clientText.toLowerCase().includes("payment verified") ||
-                           clientText.toLowerCase().includes("payment method verified") ||
-                           !!clientSection.querySelector('[data-test="payment-verified"], .payment-verified, [class*="verified"]');
+    // Payment verified (verified selector)
+    clientPaymentVerified = !!clientSection.querySelector(DETAIL_SELECTORS.paymentVerified) ||
+                           clientText.toLowerCase().includes("payment verified") ||
+                           clientText.toLowerCase().includes("payment method verified");
 
-    // Review count
+    // Review count (from text pattern)
     const reviewMatch = clientText.match(/(\d+)\s*(?:reviews?|ratings?)/i);
     if (reviewMatch) {
       clientReviewCount = parseInt(reviewMatch[1], 10);
     }
   }
 
-  // Extract connects cost
+  // === Job Activity Metrics (NEW from Firecrawl analysis) ===
+  const proposalText = getText(DETAIL_SELECTORS.proposals);
+  const proposalCount = parseInt2(proposalText);
+  const proposalTier = proposalText || undefined;
+
+  const interviewingText = getText(DETAIL_SELECTORS.interviewing);
+  const interviewingCount = parseInt2(interviewingText);
+
+  const invitesSentText = getText(DETAIL_SELECTORS.invitesSent);
+  const invitesSent = parseInt2(invitesSentText);
+
+  const lastViewedByClient = getText(DETAIL_SELECTORS.lastViewed) || undefined;
+
+  // Extract connects cost using verified selectors
+  const connectsText = getText(DETAIL_SELECTORS.connects);
   let connectsCost: number | undefined;
-  const connectsText = getText([
-    '[data-test="connects-required"]',
-    '[class*="connects"]',
-  ]);
   const connectsMatch = (connectsText || pageText).match(/(\d+)\s*connects/i);
   if (connectsMatch) {
     connectsCost = parseInt(connectsMatch[1], 10);
   }
 
-  // Extract posted time
-  const postedAgo = getText([
-    '[data-test="posted-on"]',
-    '[data-test="job-posted"]',
-    '.posted-on',
-    '[class*="posted"]',
-    'time',
-  ]).replace(/posted\s*/i, "");
+  // Extract posted time using verified selectors
+  const postedAgo = getText(DETAIL_SELECTORS.postedTime).replace(/posted\s*/i, "");
 
   // Check for external links
   const hasExternalLinks = /https?:\/\/[^\s]+/i.test(description) ||
                           /www\.[^\s]+/i.test(description) ||
                           /\.com|\.io|\.org|\.net/i.test(description);
 
-  // Extract skills
-  const skillElements = document.querySelectorAll('[data-test="skill"], .skill-badge, [class*="skill"] a, .skills a');
+  // Extract skills using verified selectors
+  const skillElements = document.querySelectorAll(DETAIL_SELECTORS.skills);
   const skillsRequired = Array.from(skillElements)
     .map((el) => el.textContent?.trim())
     .filter((s): s is string => !!s && s.length < 50)
     .slice(0, 15);
 
-  // Extract job type, experience level, project length
-  const jobType = getText(['[data-test="job-type"]', '[class*="job-type"]']);
-  const experienceLevel = getText(['[data-test="experience-level"]', '[class*="experience"]']);
-  const projectLength = getText(['[data-test="project-length"]', '[data-test="duration"]', '[class*="duration"]']);
+  // Extract job type, experience level, project length using verified selectors
+  const jobType = getText(DETAIL_SELECTORS.jobType);
+  const experienceLevel = getText(DETAIL_SELECTORS.experienceLevel);
+  const projectLength = getText(DETAIL_SELECTORS.projectLength);
+  const hoursPerWeek = getText(DETAIL_SELECTORS.hoursPerWeek);
 
   console.log(`[CAS Detail Scraper ${VERSION}] Extracted:`, {
     title: title?.slice(0, 50),
     descLen: description?.length,
+    clientName,
     clientLocation,
     clientCountry,
+    clientTotalSpent,
+    clientTotalHires,
+    clientHireRate,
     clientPaymentVerified,
+    proposalCount,
+    interviewingCount,
+    invitesSent,
+    lastViewedByClient,
     postedAgo,
   });
 
@@ -2101,21 +2237,36 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     title: title || undefined,
     description: description || undefined,
     budget: budgetText || undefined,
-    clientName: undefined, // Usually not on detail page, comes from reviews
-    clientLocation: clientLocation || undefined,
-    clientCountry: clientCountry || undefined,
-    clientTotalSpent,
-    clientAvgHourly,
-    clientHireRate,
-    clientPaymentVerified,
-    clientReviewCount,
-    connectsCost,
-    postedAgo: postedAgo || undefined,
-    hasExternalLinks,
-    skillsRequired: skillsRequired.length > 0 ? skillsRequired : undefined,
+    // Job details
     jobType: jobType || undefined,
     experienceLevel: experienceLevel || undefined,
     projectLength: projectLength || undefined,
+    hoursPerWeek: hoursPerWeek || undefined,
+    skillsRequired: skillsRequired.length > 0 ? skillsRequired : undefined,
+    // Job activity (NEW)
+    proposalCount,
+    proposalTier,
+    interviewingCount,
+    invitesSent,
+    lastViewedByClient,
+    // Client info (enhanced)
+    clientName: clientName || undefined,
+    clientLocation: clientLocation || undefined,
+    clientCountry: clientCountry || undefined,
+    clientMemberSince: clientMemberSince || undefined,
+    clientTotalSpent,
+    clientTotalHires,
+    clientActiveJobs,
+    clientAvgHourly,
+    clientTotalHours,
+    clientHireRate,
+    clientRating,
+    clientPaymentVerified,
+    clientReviewCount,
+    // Meta
+    connectsCost,
+    postedAgo: postedAgo || undefined,
+    hasExternalLinks,
   };
   } catch (error) {
     console.error(`[CAS Detail Scraper] ERROR:`, error);
@@ -2549,85 +2700,385 @@ const waitForConnection = (timeout = 5000): Promise<boolean> => {
 
 // This function runs in the page context (injected via chrome.scripting.executeScript)
 function scrapeJobsFromPageInjected() {
-  const jobs: Array<{
+  // Extended job type with all fields from Firecrawl analysis
+  interface ScrapedJob {
     title: string;
     description: string;
     url: string;
+    // Job details
+    jobType?: string;
+    budget?: string;  // Server expects string like "$100" or "$30-$50/hr"
+    budgetMin?: number;
+    budgetMax?: number;
+    experienceLevel?: string;
+    projectLength?: string;
+    hoursPerWeek?: string;
+    skillsRequired?: string[];
+    // Job activity
+    proposalCount?: number;
+    proposalTier?: string;
+    // Client data
     clientName?: string;
     clientLocation?: string;
+    clientCountry?: string;
     clientTotalSpent?: number;
-    clientHireRate?: number;
+    clientRating?: number;
     clientPaymentVerified?: boolean;
+    // Meta
     connectsCost?: number;
     postedAgo?: string;
     hasExternalLinks?: boolean;
-  }> = [];
+  }
 
-  // Default selectors for Upwork job feed
-  const selectors = {
-    jobCard: '[data-test="JobTile"], article.job-tile, .up-card-section',
-    jobTitle: '[data-test="job-tile-title-link"], .job-tile-title a, h2 a',
-    jobDescription: '[data-test="job-description-text"], .job-tile-description, .description',
-    jobLink: '[data-test="job-tile-title-link"], .job-tile-title a, h2 a',
-    clientLocation: '[data-test="client-location"], .client-location, .air3-badge',
-    postedTime: '[data-test="posted-time"], .posted-time, time',
-    connects: '[data-test="connects-to-apply"], .connects-amount',
-    paymentVerified: '.payment-verified, [data-test="payment-verified"]',
+  const jobs: ScrapedJob[] = [];
+
+  // === VERIFIED SELECTORS FROM DOM CAPTURE ANALYSIS (Jan 15, 2026) ===
+  // Two different page structures exist on Upwork:
+  // Structure 1: /nx/search/jobs uses "JobTile" pattern (PascalCase)
+  // Structure 2: /nx/find-work uses "job-tile-list" pattern (kebab-case)
+  const SELECTORS = {
+    // Job list container (both structures)
+    jobList: '[data-test="JobsList"], [data-test="job-tile-list"], section.up-card-list',
+
+    // Job card container (both structures)
+    jobCard: '[data-test="JobTile"], [data-test="job-tile"], article.job-tile, .up-card-section',
+
+    // Job title - Structure 1 uses job-tile-title-link, Structure 2 uses job-description-text
+    title: '[data-test="job-tile-title-link"], [data-test="job-description-text"], .job-tile-title a, h2 a',
+
+    // Job description
+    description: '[data-test="job-description-text"], [data-test="UpCLineClamp JobDescription"], .job-tile-description',
+
+    // Job type and budget - Structure 1 uses job-type-label, Structure 2 uses job-type
+    jobType: '[data-test="job-type-label"], [data-test="job-type"], .job-type-label',
+    budget: '[data-test="budget"], [data-test="is-fixed-price"], .budget-amount',
+    hourlyRate: '[data-test="job-type-label"], [data-test="job-type"]',
+
+    // Experience level - Structure 1 uses experience-level, Structure 2 uses contractor-tier
+    experienceLevel: '[data-test="experience-level"], [data-test="contractor-tier"], .experience-level',
+
+    // Project duration - Structure 1 uses duration-label, Structure 2 uses duration
+    projectLength: '[data-test="duration-label"], [data-test="duration"], .duration',
+    hoursPerWeek: '[data-test="duration-label"], [data-test="duration"]',
+
+    // Skills - Structure 1 uses TokenClamp JobAttrs, Structure 2 uses attr-item
+    skills: '[data-test="attr-item"], [data-test="TokenClamp JobAttrs"] span, [data-test="token"], .skill-badge, .air3-token',
+
+    // Posted time - Structure 1 has typo "pubilshed", Structure 2 uses posted-on
+    postedTime: '[data-test="job-pubilshed-date"], [data-test="posted-on"], .posted-time, time, small[data-test]',
+
+    // Proposal count - Structure 1 uses JobInfoClientMore, Structure 2 uses proposals
+    proposalCount: '[data-test="JobInfoClientMore"], [data-test="proposals"], [data-test="proposals-section"]',
+
+    // Client info - Structure 2 has dedicated selectors
+    clientLocation: '[data-test="client-country"], [data-test="client-location"], .client-location',
+    clientSpent: '[data-test="client-spendings"], [data-test="client-spent"], .client-spent',
+    clientRating: '[data-test="client-feedback"], [data-test="UpCTooltip"], .client-rating',
+    paymentVerified: '[data-test="payment-verification-status"], [data-test="UpCVerifiedBadge"], .payment-verified',
+
+    // Connects - Structure 2 uses connects-section
+    connects: '[data-test="connects-section"], [data-test="connects"], .connects-amount',
   };
 
-  const jobCards = document.querySelectorAll(selectors.jobCard);
+  // Helper: Get text from first matching selector
+  function getText(parent: Element, selectorList: string): string {
+    const selectors = selectorList.split(', ');
+    for (const sel of selectors) {
+      try {
+        const el = parent.querySelector(sel);
+        if (el?.textContent?.trim()) {
+          return el.textContent.trim();
+        }
+      } catch {
+        // Invalid selector, continue
+      }
+    }
+    return '';
+  }
 
-  jobCards.forEach((card) => {
-    const titleEl = card.querySelector(selectors.jobTitle);
-    const descEl = card.querySelector(selectors.jobDescription);
-    const linkEl = card.querySelector(selectors.jobLink) as HTMLAnchorElement | null;
-    const locationEl = card.querySelector(selectors.clientLocation);
-    const postedEl = card.querySelector(selectors.postedTime);
-    const connectsEl = card.querySelector(selectors.connects);
-    const verifiedEl = card.querySelector(selectors.paymentVerified);
+  // Helper: Get href from first matching selector
+  function getHref(parent: Element, selectorList: string): string {
+    const selectors = selectorList.split(', ');
+    for (const sel of selectors) {
+      try {
+        const el = parent.querySelector(sel) as HTMLAnchorElement | null;
+        if (el?.href) {
+          return el.href;
+        }
+      } catch {
+        // Invalid selector, continue
+      }
+    }
+    return '';
+  }
 
-    if (!titleEl || !linkEl) return;
+  // Helper: Check if element exists
+  function hasElement(parent: Element, selectorList: string): boolean {
+    const selectors = selectorList.split(', ');
+    for (const sel of selectors) {
+      try {
+        if (parent.querySelector(sel)) return true;
+      } catch {
+        // Invalid selector, continue
+      }
+    }
+    return false;
+  }
 
-    const title = titleEl.textContent?.trim() || '';
-    const description = descEl?.textContent?.trim().slice(0, 1000) || '';
-    const url = linkEl.href || '';
+  // Helper: Get all matching elements' text
+  function getMultipleText(parent: Element, selectorList: string): string[] {
+    const results: string[] = [];
+    const selectors = selectorList.split(', ');
+    for (const sel of selectors) {
+      try {
+        const elements = parent.querySelectorAll(sel);
+        elements.forEach((el) => {
+          const text = el.textContent?.trim();
+          if (text && !results.includes(text)) {
+            results.push(text);
+          }
+        });
+      } catch {
+        // Invalid selector, continue
+      }
+    }
+    return results;
+  }
 
-    if (!title || !url) return;
+  // Helper: Parse budget from text
+  function parseBudget(text: string): { type: string; amount?: number; min?: number; max?: number } {
+    if (!text) return { type: 'unknown' };
 
-    // Parse connects
-    let connectsCost = 16;
-    if (connectsEl?.textContent) {
-      const match = connectsEl.textContent.match(/(\d+)/);
-      if (match) connectsCost = parseInt(match[1], 10);
+    // Fixed price: "$1,000" or "$500"
+    const fixedMatch = text.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+    if (fixedMatch && !text.toLowerCase().includes('hr') && !text.includes('-')) {
+      return {
+        type: 'fixed',
+        amount: parseFloat(fixedMatch[1].replace(/,/g, '')),
+      };
     }
 
-    // Check for external links
-    const hasExternalLinks = /https?:\/\/(?!upwork\.com)/i.test(description);
+    // Hourly range: "$30.00 - $100.00" or "$30-$100/hr"
+    const hourlyMatch = text.match(/\$\s*([\d.]+)\s*[-–]\s*\$?\s*([\d.]+)/);
+    if (hourlyMatch) {
+      return {
+        type: 'hourly',
+        min: parseFloat(hourlyMatch[1]),
+        max: parseFloat(hourlyMatch[2]),
+      };
+    }
 
-    jobs.push({
-      title,
-      description,
-      url,
-      clientLocation: locationEl?.textContent?.trim(),
-      clientPaymentVerified: !!verifiedEl,
-      connectsCost,
-      postedAgo: postedEl?.textContent?.trim(),
-      hasExternalLinks,
+    return { type: 'unknown' };
+  }
+
+  // Helper: Parse proposal count
+  function parseProposalCount(text: string): { count?: number; tier?: string } {
+    if (!text) return {};
+
+    // Exact number: "15 proposals"
+    const exactMatch = text.match(/(\d+)\s*proposals?/i);
+    if (exactMatch) {
+      return { count: parseInt(exactMatch[1], 10), tier: text };
+    }
+
+    // Range: "10 to 15" or "Less than 5"
+    if (text.toLowerCase().includes('less than')) {
+      const match = text.match(/less than (\d+)/i);
+      return { count: match ? parseInt(match[1], 10) - 1 : 5, tier: text };
+    }
+
+    const rangeMatch = text.match(/(\d+)\s*to\s*(\d+)/i);
+    if (rangeMatch) {
+      return { count: parseInt(rangeMatch[2], 10), tier: text };
+    }
+
+    return { tier: text };
+  }
+
+  // Helper: Parse client total spent
+  function parseSpent(text: string): number | undefined {
+    if (!text) return undefined;
+
+    // "$50K+", "$100K", "$1M+"
+    const match = text.match(/\$\s*([\d.]+)\s*([KMB])?/i);
+    if (match) {
+      let amount = parseFloat(match[1]);
+      const suffix = match[2]?.toUpperCase();
+      if (suffix === 'K') amount *= 1000;
+      if (suffix === 'M') amount *= 1000000;
+      if (suffix === 'B') amount *= 1000000000;
+      return amount;
+    }
+    return undefined;
+  }
+
+  // Find all job cards - two strategies depending on page structure
+  let jobCards = document.querySelectorAll(SELECTORS.jobCard);
+  console.log(`[CAS Scraper] Strategy 1 (data-test selectors): Found ${jobCards.length} job cards`);
+
+  // Strategy 2: On find-work pages, job cards are plain divs inside job-tile-list
+  // Each job has a job-save-button, so we can find cards by locating those buttons
+  // and getting their parent containers
+  if (jobCards.length === 0) {
+    const jobTileList = document.querySelector('[data-test="job-tile-list"]');
+    if (jobTileList) {
+      console.log(`[CAS Scraper] Strategy 2: Found job-tile-list, looking for job containers...`);
+
+      // Find all job-save-button elements (one per job)
+      const saveButtons = jobTileList.querySelectorAll('[data-test="job-save-button"]');
+      console.log(`[CAS Scraper] Found ${saveButtons.length} save buttons (one per job)`);
+
+      // Get the parent article/section for each save button
+      // The structure is typically: article > ... > button[data-test="job-save-button"]
+      const cardSet = new Set<Element>();
+      saveButtons.forEach(btn => {
+        // Walk up to find the job container - usually an article or a direct child of job-tile-list
+        let parent = btn.parentElement;
+        while (parent && parent !== jobTileList) {
+          // Check if this parent contains the key job elements
+          if (parent.querySelector('[data-test="job-description-text"]') ||
+              parent.querySelector('[data-test="UpCLineClamp JobDescription"]')) {
+            cardSet.add(parent);
+            break;
+          }
+          parent = parent.parentElement;
+        }
+
+        // Fallback: if we didn't find a container with description, use the article or first level child
+        if (!cardSet.has(parent!) && btn.closest('article')) {
+          cardSet.add(btn.closest('article')!);
+        }
+      });
+
+      jobCards = Array.from(cardSet) as unknown as NodeListOf<Element>;
+      console.log(`[CAS Scraper] Strategy 2 found ${jobCards.length} job containers`);
+    }
+  }
+
+  // Strategy 3: Fallback - look for any element containing job-description-text
+  if (jobCards.length === 0) {
+    console.log(`[CAS Scraper] Strategy 3: Looking for any job-description-text containers...`);
+    const descriptions = document.querySelectorAll('[data-test="job-description-text"]');
+    const cardSet = new Set<Element>();
+    descriptions.forEach(desc => {
+      // Walk up to find a reasonable container (article, section, or div with multiple job elements)
+      let parent = desc.parentElement;
+      while (parent) {
+        if (parent.tagName === 'ARTICLE' ||
+            parent.tagName === 'SECTION' ||
+            parent.classList.contains('up-card-section')) {
+          cardSet.add(parent);
+          break;
+        }
+        // Check if this is a job card by looking for multiple job-related elements
+        const hasTitle = parent.querySelector('[data-test="job-description-text"], [data-test="job-tile-title-link"]');
+        const hasSaveBtn = parent.querySelector('[data-test="job-save-button"]');
+        if (hasTitle && hasSaveBtn) {
+          cardSet.add(parent);
+          break;
+        }
+        parent = parent.parentElement;
+      }
     });
+    jobCards = Array.from(cardSet) as unknown as NodeListOf<Element>;
+    console.log(`[CAS Scraper] Strategy 3 found ${jobCards.length} job containers`);
+  }
+
+  const jobCardArray = Array.from(jobCards);
+  console.log(`[CAS Scraper] Total job cards to process: ${jobCardArray.length}`);
+
+  jobCardArray.forEach((card, index) => {
+    try {
+      const title = getText(card, SELECTORS.title);
+      const url = getHref(card, SELECTORS.title) || getHref(card, 'a[href*="/jobs/"]');
+      const description = getText(card, SELECTORS.description).slice(0, 2000);
+
+      if (!title || !url) {
+        console.log(`[CAS Scraper] Skipping card ${index}: missing title or url`);
+        return;
+      }
+
+      // Parse job type and budget
+      const jobTypeText = getText(card, SELECTORS.jobType);
+      const budgetText = getText(card, SELECTORS.budget) || getText(card, SELECTORS.hourlyRate);
+      const budgetParsed = parseBudget(budgetText);
+
+      // Parse proposals
+      const proposalText = getText(card, SELECTORS.proposalCount);
+      const proposalParsed = parseProposalCount(proposalText);
+
+      // Parse client spent
+      const spentText = getText(card, SELECTORS.clientSpent);
+      const clientTotalSpent = parseSpent(spentText);
+
+      // Parse client rating
+      let clientRating: number | undefined;
+      const ratingText = getText(card, SELECTORS.clientRating);
+      const ratingMatch = ratingText.match(/([\d.]+)/);
+      if (ratingMatch) {
+        clientRating = parseFloat(ratingMatch[1]);
+      }
+
+      // Parse connects
+      let connectsCost = 16; // Default
+      const connectsText = getText(card, SELECTORS.connects);
+      const connectsMatch = connectsText.match(/(\d+)/);
+      if (connectsMatch) {
+        connectsCost = parseInt(connectsMatch[1], 10);
+      }
+
+      // Get skills
+      const skillsRequired = getMultipleText(card, SELECTORS.skills).slice(0, 15);
+
+      // Check for external links in description
+      const hasExternalLinks = /https?:\/\/(?!upwork\.com)/i.test(description);
+
+      // Build job object
+      const job: ScrapedJob = {
+        title,
+        description,
+        url,
+        jobType: budgetParsed.type !== 'unknown' ? budgetParsed.type : (jobTypeText.toLowerCase().includes('hourly') ? 'hourly' : 'fixed'),
+        budget: budgetText || (budgetParsed.amount ? `$${budgetParsed.amount}` : undefined),
+        budgetMin: budgetParsed.min,
+        budgetMax: budgetParsed.max,
+        experienceLevel: getText(card, SELECTORS.experienceLevel).toLowerCase() || undefined,
+        projectLength: getText(card, SELECTORS.projectLength) || undefined,
+        hoursPerWeek: getText(card, SELECTORS.hoursPerWeek) || undefined,
+        skillsRequired: skillsRequired.length > 0 ? skillsRequired : undefined,
+        proposalCount: proposalParsed.count,
+        proposalTier: proposalParsed.tier,
+        clientLocation: getText(card, SELECTORS.clientLocation) || undefined,
+        clientTotalSpent,
+        clientRating,
+        clientPaymentVerified: hasElement(card, SELECTORS.paymentVerified),
+        connectsCost,
+        postedAgo: getText(card, SELECTORS.postedTime) || undefined,
+        hasExternalLinks,
+      };
+
+      jobs.push(job);
+    } catch (err) {
+      console.error(`[CAS Scraper] Error processing card ${index}:`, err);
+    }
   });
 
+  console.log(`[CAS Scraper] Successfully scraped ${jobs.length} jobs`);
   return jobs;
 }
 
 // Extract profile stats from Upwork page (connects, proposals)
+// === VERIFIED SELECTORS FROM DOM CAPTURE (profile-stats page, Jan 15, 2026) ===
 function extractProfileStats() {
-  const stats: { connects?: number; proposals?: number } = {};
+  const stats: { connects?: number; proposals?: number; earnings?: number; jobSuccess?: string } = {};
 
-  // Try to find connects balance
+  // Try to find connects balance - VERIFIED: stats-connects-info = "Connects: 90"
   const connectsSelectors = [
+    '[data-test="stats-connects-info"]',      // "Connects: 90"
+    '[data-test="stats-connects-subheading"]', // "Connects: 90"
+    '[data-test="stats-bottom-content"]',     // Contains connects info
     '[data-test="available-connects"]',
     '.connects-balance',
-    '.air3-badge:contains("Connects")',
   ];
 
   for (const sel of connectsSelectors) {
@@ -2637,6 +3088,26 @@ function extractProfileStats() {
         const match = el.textContent.match(/(\d+)/);
         if (match) {
           stats.connects = parseInt(match[1], 10);
+          break;
+        }
+      }
+    } catch {
+      // Selector might be invalid, continue
+    }
+  }
+
+  // Try to find 12-month earnings - VERIFIED: stats-earnings-amount
+  const earningsSelectors = [
+    '[data-test="stats-earnings-amount"]',    // "$0" or actual amount
+  ];
+
+  for (const sel of earningsSelectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el?.textContent) {
+        const match = el.textContent.match(/\$?([\d,]+)/);
+        if (match) {
+          stats.earnings = parseFloat(match[1].replace(/,/g, ''));
           break;
         }
       }
@@ -2674,15 +3145,186 @@ function extractProfileStats() {
 // DOM CAPTURE FUNCTION (Injected into page for selector development)
 // =============================================================================
 
+// =============================================================================
+// GRAPHQL INTERCEPTION FUNCTION (Captures API responses for richer data)
+// Based on Firecrawl analysis: Upwork uses GraphQL at /api/graphql/v1
+// =============================================================================
+
+interface GraphQLCaptureResult {
+  operationName: string;
+  data: unknown;
+  timestamp: string;
+}
+
+function setupGraphQLInterceptionInjected(): void {
+  // Only set up once
+  if ((window as unknown as { __CAS_GRAPHQL_INTERCEPTOR__?: boolean }).__CAS_GRAPHQL_INTERCEPTOR__) {
+    console.log("[CAS GraphQL] Interceptor already set up");
+    return;
+  }
+  (window as unknown as { __CAS_GRAPHQL_INTERCEPTOR__?: boolean }).__CAS_GRAPHQL_INTERCEPTOR__ = true;
+
+  const captures: GraphQLCaptureResult[] = [];
+
+  // Store original fetch
+  const originalFetch = window.fetch;
+
+  // Override fetch to intercept GraphQL requests
+  window.fetch = async function(...args: Parameters<typeof fetch>): Promise<Response> {
+    const response = await originalFetch.apply(this, args);
+
+    try {
+      // Handle all fetch input types: string, URL, Request
+      const url = typeof args[0] === 'string'
+        ? args[0]
+        : args[0] instanceof URL
+          ? args[0].href
+          : (args[0] as Request)?.url || '';
+
+      // Check if this is a GraphQL request
+      if (url.includes('/api/graphql') || url.includes('/graphql')) {
+        const clone = response.clone();
+        const data = await clone.json();
+
+        // Extract operation name from request body
+        let operationName = 'unknown';
+        if (args[1]?.body) {
+          try {
+            const body = JSON.parse(args[1].body as string);
+            operationName = body.operationName || body.query?.match(/(?:query|mutation)\s+(\w+)/)?.[1] || 'unknown';
+          } catch { /* ignore parse errors */ }
+        }
+
+        const capture: GraphQLCaptureResult = {
+          operationName,
+          data,
+          timestamp: new Date().toISOString(),
+        };
+
+        captures.push(capture);
+        console.log(`[CAS GraphQL] Captured: ${operationName}`, data);
+
+        // Store in sessionStorage for access by content script
+        try {
+          const existing = JSON.parse(sessionStorage.getItem('__CAS_GRAPHQL_CAPTURES__') || '[]');
+          existing.push(capture);
+          // Keep only last 20 captures
+          while (existing.length > 20) existing.shift();
+          sessionStorage.setItem('__CAS_GRAPHQL_CAPTURES__', JSON.stringify(existing));
+        } catch { /* storage might be full */ }
+      }
+    } catch (err) {
+      console.log("[CAS GraphQL] Error intercepting:", err);
+    }
+
+    return response;
+  };
+
+  console.log("[CAS GraphQL] Fetch interceptor installed");
+}
+
+// =============================================================================
+// INITIAL STATE EXTRACTION (Angular SSR hydration data)
+// Angular apps embed initial state in script tags
+// =============================================================================
+
+interface InitialStateResult {
+  found: boolean;
+  stateType: string;
+  jobs?: unknown[];
+  user?: unknown;
+  raw?: unknown;
+}
+
+function extractInitialStateInjected(): InitialStateResult {
+  console.log("[CAS InitialState] Searching for embedded state...");
+
+  const scripts = document.querySelectorAll('script:not([src])');
+  let result: InitialStateResult = { found: false, stateType: 'none' };
+
+  for (const script of scripts) {
+    const content = script.textContent || '';
+
+    // Pattern 1: window.__INITIAL_STATE__
+    if (content.includes('__INITIAL_STATE__')) {
+      try {
+        const match = content.match(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/);
+        if (match) {
+          const state = JSON.parse(match[1]);
+          console.log("[CAS InitialState] Found __INITIAL_STATE__:", Object.keys(state));
+          result = {
+            found: true,
+            stateType: '__INITIAL_STATE__',
+            raw: state,
+            jobs: state.jobs || state.searchResults || state.data?.jobs,
+            user: state.user || state.viewer || state.currentUser,
+          };
+          break;
+        }
+      } catch (e) {
+        console.log("[CAS InitialState] Error parsing __INITIAL_STATE__:", e);
+      }
+    }
+
+    // Pattern 2: __APOLLO_STATE__ (GraphQL cache)
+    if (content.includes('__APOLLO_STATE__')) {
+      try {
+        const match = content.match(/__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\});/);
+        if (match) {
+          const state = JSON.parse(match[1]);
+          console.log("[CAS InitialState] Found __APOLLO_STATE__:", Object.keys(state).slice(0, 10));
+          result = {
+            found: true,
+            stateType: '__APOLLO_STATE__',
+            raw: state,
+          };
+          break;
+        }
+      } catch (e) {
+        console.log("[CAS InitialState] Error parsing __APOLLO_STATE__:", e);
+      }
+    }
+
+    // Pattern 3: Angular TransferState
+    if (content.includes('TransferState') || content.includes('ngh')) {
+      try {
+        // Look for JSON in script#transfer-state
+        const transferScript = document.getElementById('transfer-state') ||
+                              document.querySelector('script[id*="transfer"]');
+        if (transferScript?.textContent) {
+          const state = JSON.parse(transferScript.textContent);
+          console.log("[CAS InitialState] Found TransferState");
+          result = {
+            found: true,
+            stateType: 'TransferState',
+            raw: state,
+          };
+          break;
+        }
+      } catch (e) {
+        console.log("[CAS InitialState] Error parsing TransferState:", e);
+      }
+    }
+  }
+
+  console.log("[CAS InitialState] Result:", result.found ? result.stateType : 'not found');
+  return result;
+}
+
+// =============================================================================
+// DOM CAPTURE FUNCTION (Injected into page for selector development)
+// =============================================================================
+
 // More granular page types for comprehensive DOM capture coverage
 type UpworkPageType =
   | "job-list-best-match"      // /nx/search/jobs (default sort)
   | "job-list-most-recent"     // /nx/search/jobs?sort=recency
   | "job-list-saved"           // /nx/search/jobs/saved
   | "job-list-search"          // /nx/search/jobs?q=keyword
+  | "best-matches"             // /nx/find-work/best-matches (alternative feed)
   | "job-detail"               // /jobs/~01xxxxx
-  | "job-detail-apply"         // /jobs/~01xxxxx/apply (application page)
-  | "profile-stats"            // /freelancers/settings/my-stats
+  | "job-detail-apply"         // /nx/proposals/job/~ID/apply/
+  | "profile-stats"            // /nx/my-stats/
   | "profile-settings"         // /freelancers/settings/*
   | "proposals"                // /nx/proposals/*
   | "messages"                 // /nx/messages/*
@@ -2719,8 +3361,13 @@ function captureDomStructureInjected(): DomCaptureResult {
   let pageType: UpworkPageType = "unknown";
   let urlPattern = "unknown";
 
-  // Job Detail Pages
-  if (pathname.includes("/jobs/") && pathname.includes("~")) {
+  // Job Application Page (must check before proposals - /nx/proposals/job/~ID/apply/)
+  if (pathname.includes("/proposals/job/") && pathname.includes("/apply")) {
+    pageType = "job-detail-apply";
+    urlPattern = "/nx/proposals/job/~ID/apply";
+  }
+  // Job Detail Pages (/jobs/~ID or /jobs/~ID/apply)
+  else if (pathname.includes("/jobs/") && pathname.includes("~")) {
     if (pathname.includes("/apply")) {
       pageType = "job-detail-apply";
       urlPattern = "/jobs/~ID/apply";
@@ -2729,8 +3376,13 @@ function captureDomStructureInjected(): DomCaptureResult {
       urlPattern = "/jobs/~ID";
     }
   }
+  // Profile Stats Page (/nx/my-stats/)
+  else if (pathname.includes("/nx/my-stats") || pathname.includes("/my-stats")) {
+    pageType = "profile-stats";
+    urlPattern = "/nx/my-stats";
+  }
   // Job List Pages - various types
-  else if (pathname.includes("/nx/search/jobs") || pathname.includes("/search/jobs") || pathname.includes("/nx/find-work")) {
+  else if (pathname.includes("/nx/search/jobs") || pathname.includes("/search/jobs")) {
     urlPattern = pathname;
 
     if (pathname.includes("/saved")) {
@@ -2747,7 +3399,12 @@ function captureDomStructureInjected(): DomCaptureResult {
       urlPattern = "/nx/search/jobs (best match)";
     }
   }
-  // Profile/Stats Pages
+  // Best Matches Feed (/nx/find-work/best-matches or /ab/find-work/best-matches)
+  else if (pathname.includes("/find-work/best-matches") || pathname.includes("/ab/find-work") || pathname.includes("/nx/find-work")) {
+    pageType = "best-matches";
+    urlPattern = "/nx/find-work/best-matches";
+  }
+  // Profile/Settings Pages (legacy URLs)
   else if (pathname.includes("/freelancers/")) {
     if (pathname.includes("/my-stats") || pathname.includes("/stats")) {
       pageType = "profile-stats";
@@ -2757,7 +3414,7 @@ function captureDomStructureInjected(): DomCaptureResult {
       urlPattern = "/freelancers/settings/*";
     }
   }
-  // Proposals
+  // Proposals Page (/nx/proposals/ but NOT /nx/proposals/job/~ID/apply)
   else if (pathname.includes("/nx/proposals") || pathname.includes("/proposals")) {
     pageType = "proposals";
     urlPattern = "/nx/proposals/*";

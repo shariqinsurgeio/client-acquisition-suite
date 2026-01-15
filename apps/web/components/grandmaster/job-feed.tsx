@@ -147,9 +147,14 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
     try {
       const res = await fetch("/api/jobs");
       const data = await res.json();
+      console.log("[JobFeed] API response:", data?.length, "jobs");
       if (Array.isArray(data)) {
-        setJobs(data.map(convertLegacyJob));
+        const converted = data.map(convertLegacyJob);
+        console.log("[JobFeed] Converted jobs:", converted.length, converted[0]?.title);
+        setJobs(converted);
         setLastUpdate(new Date());
+      } else {
+        console.error("[JobFeed] API did not return array:", data);
       }
     } catch (err) {
       console.error("Failed to fetch jobs:", err);
