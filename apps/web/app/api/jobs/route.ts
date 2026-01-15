@@ -1,7 +1,33 @@
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { auth } from "@clerk/nextjs/server";
+import { verifyToken } from "@clerk/backend";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
+
+// Helper to get userId from either cookie auth or Bearer token
+async function getUserId(request: Request): Promise<string | null> {
+    // First try cookie-based auth (dashboard)
+    const { userId } = await auth();
+    if (userId) return userId;
+
+    // Then try Bearer token auth (extension)
+    const authHeader = request.headers.get("Authorization");
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.slice(7);
+        try {
+            const secretKey = process.env.CLERK_SECRET_KEY;
+            if (!secretKey) return null;
+
+            const verified = await verifyToken(token, { secretKey });
+            return verified.sub;
+        } catch (err) {
+            console.warn("Bearer token verification failed:", err);
+            return null;
+        }
+    }
+
+    return null;
+}
 
 // Validation schema for creating jobs
 const CreateJobSchema = z.object({
@@ -15,7 +41,7 @@ const CreateJobSchema = z.object({
 // GET /api/jobs - Fetch all jobs with optional filters
 export async function GET(request: Request) {
     try {
-        const { userId } = await auth();
+        const userId = await getUserId(request);
         if (!userId) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
@@ -51,7 +77,7 @@ export async function GET(request: Request) {
 // POST /api/jobs - Create a new job
 export async function POST(request: Request) {
     try {
-        const { userId } = await auth();
+        const userId = await getUserId(request);
         if (!userId) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }

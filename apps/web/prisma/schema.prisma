@@ -8,21 +8,64 @@ datasource db {
 }
 
 model Job {
-  id          String   @id @default(uuid())
-  userId      String   // Clerk user ID
-  platform    String
-  title       String
-  description String   @db.Text
-  url         String
-  status      String   @default("NEW")
-  fitScore    Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String    @id @default(uuid())
+  userId          String    // Clerk user ID
+  platform        String
+  title           String
+  description     String    @db.Text
+  url             String
+  status          String    @default("NEW")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lastRefreshedAt DateTime? // Last time job data was refreshed from source
+
+  // === Client Data (The "Sherlock" Fields) ===
+  clientName            String?  // Found in reviews (e.g., "Masood")
+  clientLocation        String?  // City/Region for P.S. banter
+  clientCountry         String?  // For Big Five filtering
+  clientTotalSpent      Float?   // Total spent on platform
+  clientAvgHourly       Float?   // Avg hourly rate paid
+  clientHireRate        Float?   // Hire rate 0-100
+  clientPaymentVerified Boolean  @default(false)
+  clientReviewCount     Int?     // Number of reviews
+
+  // === Meta Data (Strategic Metrics) ===
+  fitScore              Int?     // 0-100 auto-calculated (legacy, use scoreWinLikelihood)
+  connectsCost          Int?     // Cost to apply
+  hasExternalLinks      Boolean  @default(false) // Triggers Audit playbook
+  keywordsFound         String?  @db.Text // JSON array of matched keywords
+  dealBreakers          String?  @db.Text // JSON array of red flags
+  postedAgo             String?  // "2 hours ago"
+
+  // === Multi-Factor Score Breakdown (Phase 2) ===
+  scoreRelevance        Int?     // 0-100, keyword/skill match
+  scoreClientQuality    Int?     // 0-100, client reliability
+  scoreCompetition      Int?     // 0-100, inverse of difficulty
+  scoreWinLikelihood    Int?     // 0-100, overall win likelihood (primary score)
+
+  // === Shortlist (Phase 3) ===
+  isShortlisted         Boolean  @default(false)
+  shortlistedAt         DateTime?
+
+  // === Enrichment Tracking ===
+  needsEnrichment       Boolean  @default(false)
+  enrichedAt            DateTime?
+
+  // === Pipeline Data ===
+  appliedAt             DateTime?
+  lastContactAt         DateTime?
+  connectsRefunded      Boolean  @default(false)
+
+  // Relations
+  proposals             ProposalDraft[]
 
   @@unique([userId, url])
   @@index([userId])
   @@index([userId, status])
   @@index([userId, createdAt])
+  @@index([userId, fitScore])
+  @@index([userId, isShortlisted])
+  @@index([clientCountry])
 }
 
 model PlatformSelector {
@@ -33,4 +76,264 @@ model PlatformSelector {
 
   @@unique([userId, platform])
   @@index([userId])
+}
+
+// === User Persona (The "Identity Matrix") ===
+model UserPersona {
+  id            String   @id @default(uuid())
+  userId        String   // Clerk user ID
+  name          String   // e.g., "GenAI Expert"
+  bio           String   @db.Text // The "foremost expert" hook
+  tone          String   @default("Direct") // Direct | Consultative | Technical
+  expertiseTags String?  @db.Text // JSON array of skills
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// === Asset Vault (Looms, Links, PDFs) ===
+model Asset {
+  id        String   @id @default(uuid())
+  userId    String   // Clerk user ID
+  type      String   // loom | link | pdf
+  name      String   // e.g., "StubHub Scraper Demo"
+  url       String
+  category  String?  // e.g., "Scraping", "Automation"
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, type])
+}
+
+// === User Settings (Rate Guard, Preferences) ===
+model UserSettings {
+  id                    String  @id @default(uuid())
+  userId                String  @unique // Clerk user ID
+
+  // Rate Guard
+  autoDeclineRateIncrease Boolean @default(true) // Always "Never"
+  defaultSignOff          String  @default("Peace")
+
+  // Filtering Defaults
+  minHireRate             Float   @default(20)
+  minAvgHourly            Float   @default(30)
+  bigFiveOnly             Boolean @default(false)
+
+  // Live Stream
+  liveStreamEnabled       Boolean @default(false)
+  liveStreamIntervalSec   Int     @default(60)
+
+  // Search Keywords for Discovery (JSON array)
+  searchKeywords          String? @db.Text // ["AI", "generative AI", "AI automation", "n8n"]
+
+  @@index([userId])
+}
+
+// === User Profile (Connects, Stats, Profile Health) ===
+model UserProfile {
+  id                    String   @id @default(uuid())
+  userId                String   @unique // Clerk user ID
+
+  // Upwork Profile
+  upworkUsername        String?
+  upworkProfileUrl      String?
+  profileBio            String?  @db.Text
+
+  // Connects & Budget
+  connectsBalance       Int      @default(0)
+  connectsSpentTotal    Int      @default(0)
+  connectsRefundedTotal Int      @default(0)
+
+  // Stats
+  proposalsSentTotal    Int      @default(0)
+  proposalsActiveCount  Int      @default(0)
+  interviewsTotal       Int      @default(0)
+  hiresTotal            Int      @default(0)
+
+  // Profile Health
+  profileCompletionPct  Int      @default(0)
+  availabilityStatus    String   @default("available")
+
+  // Sync
+  lastSyncedAt          DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// === Proposal Drafts (Saved proposals per job) ===
+model ProposalDraft {
+  id          String    @id @default(uuid())
+  userId      String    // Clerk user ID
+  jobId       String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  // Content
+  playbook    String    // AUDIT_PITCH, CONTEXT_TRAP, DIRECT_APPLY
+  content     String    @db.Text
+  psLine      String?
+
+  // Assets Used
+  assetsUsed  String?   @db.Text // JSON array of Asset IDs
+
+  // Status
+  status      String    @default("draft") // draft, ready, sent
+  sentAt      DateTime?
+
+  // Versioning
+  version     Int       @default(1)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([jobId])
+}
+
+// === Daily Analytics (ROI Tracking) ===
+model DailyAnalytics {
+  id                   String   @id @default(uuid())
+  userId               String   // Clerk user ID
+  date                 DateTime @db.Date
+
+  // Activity
+  jobsScraped          Int      @default(0)
+  proposalsSent        Int      @default(0)
+  connectsSpent        Int      @default(0)
+
+  // Outcomes
+  responsesReceived    Int      @default(0)
+  interviewsScheduled  Int      @default(0)
+  jobsWon              Int      @default(0)
+
+  // Financials
+  revenueEarned        Float    @default(0)
+
+  createdAt            DateTime @default(now())
+
+  @@unique([userId, date])
+  @@index([userId])
+}
+
+// === Client Profile (Repeat client tracking) ===
+model ClientProfile {
+  id                String    @id @default(uuid())
+  userId            String    // Clerk user ID
+
+  // Identity
+  clientName        String
+  upworkClientId    String?
+
+  // Stats (aggregated from jobs)
+  totalJobsPosted   Int       @default(0)
+  avgBudget         Float?
+  avgHourlyRate     Float?
+  totalSpent        Float?
+  hireRate          Float?
+
+  // Relationship
+  previousWorkCount Int       @default(0)
+  lastContactAt     DateTime?
+  notes             String?   @db.Text
+  isVIP             Boolean   @default(false)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([userId, clientName])
+  @@index([userId])
+}
+
+// === Scrape Operation (Scrape History Tracking) ===
+model ScrapeOperation {
+  id                String    @id @default(uuid())
+  userId            String    // Clerk user ID
+
+  // Operation Details
+  platform          String    // UPWORK, LINKEDIN, etc.
+  targetUrl         String?   // URL that was scraped
+  status            String    @default("RUNNING") // RUNNING, COMPLETED, FAILED, CANCELLED
+
+  // Results
+  jobsFound         Int       @default(0)
+  jobsNew           Int       @default(0)
+  jobsUpdated       Int       @default(0)
+
+  // Timing
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  durationMs        Int?      // Duration in milliseconds
+
+  // Debug Info
+  logs              String?   @db.Text // JSON array of log entries
+  errorMessage      String?
+
+  // Jobs created in this operation
+  jobIds            String?   @db.Text // JSON array of job IDs
+
+  createdAt         DateTime  @default(now())
+
+  @@index([userId])
+  @@index([userId, startedAt])
+  @@index([userId, status])
+}
+
+// === Daily Usage (Anti-Detection & Account Protection) ===
+model DailyUsage {
+  id                  String    @id @default(uuid())
+  userId              String    // Clerk user ID
+  date                DateTime  @db.Date  // Just the date, no time
+
+  // Scraping counters (reset daily)
+  jobsScraped         Int       @default(0)
+  detailPagesVisited  Int       @default(0)
+  sourcesScraped      Int       @default(0)
+
+  // Protection events
+  blocksDetected      Int       @default(0)
+  cooldownsEntered    Int       @default(0)
+  lastCooldownAt      DateTime?
+
+  // Current cooldown state
+  cooldownUntil       DateTime?
+  cooldownReason      String?
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId])
+}
+
+// === DOM Capture (Selector Development & Self-Healing) ===
+model DomCapture {
+  id                String    @id @default(uuid())
+  userId            String    // Clerk user ID
+
+  // Page Context
+  pageUrl           String
+  pageType          String    // Granular: job-list-best-match, job-detail, profile-stats, etc.
+  urlPattern        String?   // Normalized pattern: /jobs/~ID, /nx/search/jobs?q=KEYWORD
+  platform          String    @default("UPWORK")
+
+  // Captured Data
+  dataAttributes    String    @db.Text  // JSON array of {attr, tag, classes, textPreview}
+  jobCardSample     String?   @db.Text  // Truncated HTML of first job card
+  clientSection     String?   @db.Text  // Truncated HTML of client info section
+  fullStructure     String?   @db.Text  // Full page structure summary (JSON)
+
+  // Metadata
+  capturedAt        DateTime  @default(now())
+  notes             String?   // User notes about this capture
+
+  // Analysis Status
+  analyzed          Boolean   @default(false)
+  suggestedSelectors String?  @db.Text  // JSON of suggested selector updates
+
+  @@index([userId])
+  @@index([pageType])
+  @@index([capturedAt])
 }

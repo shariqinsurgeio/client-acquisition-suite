@@ -6,7 +6,7 @@
   "author": "Client Acquisition Suite Team",
   "scripts": {
     "dev": "plasmo dev",
-    "build": "plasmo build",
+    "build": "PLASMO_PUBLIC_BUILD_TIME=$(date +%s) plasmo build",
     "package": "plasmo package",
     "typecheck": "tsc --noEmit"
   },

@@ -86,6 +86,19 @@ window.addEventListener("message", async (event) => {
   }
 });
 
+// Listen for messages from background script that need to go to the dashboard
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Forward fresh token request to dashboard
+  if (message?.type === "REQUEST_FRESH_TOKEN_FROM_DASHBOARD") {
+    console.log("[CAS Auth Bridge] Requesting fresh token from dashboard");
+    window.postMessage({
+      type: "CAS_REQUEST_FRESH_TOKEN",
+    }, window.location.origin);
+    sendResponse({ forwarded: true });
+  }
+  return true;
+});
+
 // Announce extension presence to the page
 window.postMessage({
   type: "CAS_EXTENSION_PRESENT",

@@ -4,11 +4,18 @@ import React, { createContext, useContext, useEffect, useState, useRef } from "r
 import { io, Socket } from "socket.io-client";
 import { useAuth } from "@clerk/nextjs";
 
+interface ScrapeProgress {
+    progress: number;
+    message: string;
+    jobsFound?: number;
+}
+
 interface SocketContextType {
     socket: Socket | null;
     isConnected: boolean;
     extensionStatus: "ONLINE" | "OFFLINE";
     extensionInstalled: boolean;
+    scrapeProgress: ScrapeProgress | null;
 }
 
 const SocketContext = createContext<SocketContextType>({
@@ -16,6 +23,7 @@ const SocketContext = createContext<SocketContextType>({
     isConnected: false,
     extensionStatus: "OFFLINE",
     extensionInstalled: false,
+    scrapeProgress: null,
 });
 
 export const useSocket = () => useContext(SocketContext);
@@ -26,6 +34,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
     const [isConnected, setIsConnected] = useState(false);
     const [extensionStatus, setExtensionStatus] = useState<"ONLINE" | "OFFLINE">("OFFLINE");
     const [extensionInstalled, setExtensionInstalled] = useState(false);
+    const [scrapeProgress, setScrapeProgress] = useState<ScrapeProgress | null>(null);
     const tokenSentRef = useRef(false);
     const socketRef = useRef<Socket | null>(null);
     const isConnectingRef = useRef(false);
@@ -83,6 +92,20 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
                         case "EXTENSION_OFFLINE":
                             setExtensionStatus("OFFLINE");
                             break;
+                    }
+                });
+
+                // Listen for scrape progress
+                socketInstance.on("SCRAPE_PROGRESS", (data: ScrapeProgress) => {
+                    console.log("[Socket] Scrape progress:", data);
+                    if (!isMounted) return;
+                    setScrapeProgress(data);
+
+                    // Clear progress after completion
+                    if (data.progress >= 100) {
+                        setTimeout(() => {
+                            setScrapeProgress(null);
+                        }, 3000);
                     }
                 });
 
@@ -185,6 +208,25 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
             if (message?.type === "CAS_AUTH_RESPONSE") {
                 console.log("[Socket] Extension auth response:", message);
             }
+
+            // Extension requesting fresh token (for reconnection)
+            if (message?.type === "CAS_REQUEST_FRESH_TOKEN") {
+                console.log("[Socket] Extension requesting fresh token...");
+                if (isSignedIn) {
+                    try {
+                        const token = await getToken();
+                        if (token) {
+                            console.log("[Socket] Sending fresh token to extension...");
+                            window.postMessage({
+                                type: "CAS_AUTH_TOKEN",
+                                token,
+                            }, window.location.origin);
+                        }
+                    } catch (err) {
+                        console.error("[Socket] Failed to get fresh token:", err);
+                    }
+                }
+            }
         };
 
         window.addEventListener("message", handleMessage);
@@ -223,7 +265,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
     }, [isSignedIn, extensionInstalled, getToken]);
 
     return (
-        <SocketContext.Provider value={{ socket, isConnected, extensionStatus, extensionInstalled }}>
+        <SocketContext.Provider value={{ socket, isConnected, extensionStatus, extensionInstalled, scrapeProgress }}>
             {children}
         </SocketContext.Provider>
     );
