@@ -521,19 +521,74 @@ data-test="stats-badge-title"         - "Rising talent"
 
 ---
 
-## Next Steps (When You Return)
+## Session Changes (Jan 15, 2026)
 
-### Immediate Priority:
-1. **Update scraper selectors** to handle BOTH page structures:
-   - Add selectors for `/nx/find-work` pages (job-tile-list pattern)
-   - Current scraper only handles `/nx/search/jobs` (JobTile pattern)
+### Scraper Sync Architecture Fixes ✅ COMPLETED
 
-2. **Test live scraping** with updated selectors
+**Issue 1: Search Pages Finding 0 Jobs** ✅
+- Problem: `/nx/search/jobs/` returned 0 while `/nx/find-work/*` worked
+- Root cause: Different DOM structures - JobTile vs job-tile-list
+- Fix: Switched to multi-strategy `scrapeJobsFromPageInjected` function
+- Added extra wait time for search pages (6s vs 4s)
+- Added scroll trigger for lazy-loaded content
 
-### Then:
-3. Commit all changes with descriptive message
-4. Test GraphQL interception on live pages
-5. Continue with Phase 8 (Production Hardening)
+**Issue 2: ScrapeOperation Stuck at 0/0/0** ✅
+- Problem: History view showed operations stuck in RUNNING with 0 counts
+- Root cause: DISCOVERY_COMPLETE only emitted events, never updated DB
+- Fix: Added direct `prisma.scrapeOperation.update()` in both handlers:
+  - DISCOVERY_COMPLETE (when no enrichment needed)
+  - ENRICHMENT_COMPLETE (after enrichment)
+
+**Issue 3: Missing Frontend Event Listeners** ✅
+- Problem: Server emitted ERROR and JOB_SHORTLISTED but frontend ignored them
+- Fix: Added listeners in SocketContext.tsx
+- Exposed: `lastError`, `recentShortlisted`, `clearError()`
+
+**Issue 4: Neon Connection Pool Exhaustion** ✅
+- Problem: Intermittent "connection pool timeout" errors
+- Fix: Added concurrency guard to cleanup function
+- Added per-operation error handling
+- Delayed initial cleanup to let connections warm up
+
+**Issue 5: Zod Schema Validation** ✅
+- Problem: "Too big: expected string to have <=500 characters"
+- Fix: Removed max limits on title/description fields
+
+**Issue 6: TypeScript Type Errors** ✅
+- Added DOM_CAPTURE/DOM_CAPTURED to socket event types
+- Fixed ZodError `.errors` → `.flatten()`
+- Fixed scrape result type handling
+
+### Commits Made (Jan 15)
+1. `24d40a6` - feat: add multi-strategy job card detection
+2. `d34c5d6` - fix: scraper sync issues, event listeners, and connection pool stability
+
+### Test Results (Jan 15)
+```
+Scrape All: 39 jobs discovered
+Server: 14 new, 25 existing
+History View: Shows 39 Found / 14 New / 25 Updated ✅
+All operations complete with correct counts ✅
+```
+
+---
+
+## Next Steps
+
+### P1 - High Priority
+1. **Persist daily counters to database** - Currently only in chrome.storage
+2. **Investigate long job titles** - Some exceed 2000 chars
+3. **GraphQL interception enhancement** - Parse captured data for richer info
+
+### P2 - Medium Priority
+4. Add isRefresh flag to enrichment
+5. Deduplicate within DISCOVERY_COMPLETE batch
+6. Store SCRAPE_BLOCKED events
+7. Test ERROR display on frontend
+
+### P3 - Nice to Have
+8. Add "reason" to JOB_EXPIRED status
+9. Transaction/rollback for multi-job operations
 
 ---
 

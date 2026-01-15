@@ -255,13 +255,96 @@ git commit -m "fix: scraping sync issues and add missing event listeners"
    - Budget type fix
    - Rate limit updates
 
-**Pending Commit**:
-- ScrapeOperation direct DB update
-- ERROR/JOB_SHORTLISTED listeners
-- Stuck operation cleanup
-- Zod schema limit removal
+2. `d34c5d6` - fix: scraper sync issues, event listeners, and connection pool stability
+   - Direct DB update in DISCOVERY_COMPLETE handler
+   - Job counts in ENRICHMENT_COMPLETE handler
+   - ERROR and JOB_SHORTLISTED event listeners
+   - Stuck operation cleanup with concurrency guard
+   - Zod schema limit removal
+   - Neon connection pool stability improvements
+   - TypeScript type definitions for DOM events
 
 ---
 
-*Session ended: January 15, 2026*
-*Next session: Commit pending changes, test History view, investigate long titles*
+## Continuation Session (Later Jan 15)
+
+### Additional Fixes Applied
+
+**7. Connection Pool Exhaustion**
+- **Problem**: Neon PostgreSQL connection pool timeouts causing intermittent failures
+- **Solution** (`apps/web/lib/prisma.ts` + `apps/web/server.ts`):
+  - Added concurrency guard (`isCleanupRunning`) to prevent parallel cleanup runs
+  - Added per-operation error handling in cleanup function
+  - Delayed initial cleanup by 5s to let connections warm up
+  - Added connection error logging to Prisma client
+
+**8. TypeScript Type Errors**
+- **Problem**: Missing type definitions for DOM_CAPTURE and DOM_CAPTURED events
+- **Solution** (`apps/web/server.ts`):
+  - Added `DOM_CAPTURE` to `ClientToServerEvents` interface
+  - Added `DOM_CAPTURED` to `ServerToClientEvents` interface
+  - Fixed ZodError `.errors` → `.flatten()` in dom-captures route
+
+**9. Scrape Result Type Compatibility**
+- **Problem**: `scrapeJobsFromPageInjected` return type mismatch in SCRAPE_CURRENT_PAGE handler
+- **Solution** (`apps/extension/background.ts`):
+  - Added type guard to handle both array and ScrapeResult formats
+
+### Final Test Results (Continuation)
+
+```
+Scrape All Results (Jan 15 Continuation):
+├── Best Matches: jobs ✅
+├── Most Recent: jobs ✅
+├── Search "AI": 10 jobs ✅
+├── Search "generative AI": 10 jobs ✅
+├── Search "AI automation": 10 jobs ✅
+└── Search "n8n": 10 jobs ✅
+
+Total: 39 jobs discovered
+Server: 14 new, 25 existing
+Database: Operation ef018d66 COMPLETED with correct counts ✅
+History View: Shows 39 Found / 14 New / 25 Updated ✅
+```
+
+### All P0 Tasks Completed ✅
+
+| Task | Status |
+|------|--------|
+| Commit all changes | ✅ `d34c5d6` |
+| Test History view | ✅ Shows correct counts |
+| Connection pool stability | ✅ Fixed |
+| TypeScript errors | ✅ Fixed |
+
+---
+
+## Next Actions (Updated Priority)
+
+### P1 - High Priority
+1. **Persist daily counters to database** - Currently only in extension's chrome.storage
+   - Create `DailyUsage` table in Prisma schema
+   - Track: jobsScraped, detailPagesVisited, blocksDetected per user per day
+   - Sync from extension to server
+
+2. **Investigate long job titles** - Why are some "titles" > 2000 chars?
+   - Check extension scraping logic
+   - May be concatenating title + description
+
+3. **GraphQL interception enhancement** - Currently captures but doesn't use data
+   - Parse captured GraphQL responses for richer job data
+   - Could get proposal counts, client info directly
+
+### P2 - Medium Priority
+4. **Add isRefresh flag to enrichment** - Distinguish re-enrichment from first run
+5. **Deduplicate within DISCOVERY_COMPLETE batch** - Same job from multiple sources
+6. **Store SCRAPE_BLOCKED events** - Audit trail for bot detection
+7. **Test ERROR display** - Trigger a validation error to verify frontend shows it
+
+### P3 - Nice to Have
+8. **Add "reason" to JOB_EXPIRED status** - Why was job removed?
+9. **Transaction/rollback for multi-job operations** - Handle partial failures
+
+---
+
+*Session ended: January 15, 2026 (Continuation)*
+*All critical fixes committed and tested successfully*
