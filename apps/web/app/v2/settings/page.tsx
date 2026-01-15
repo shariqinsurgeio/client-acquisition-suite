@@ -21,6 +21,9 @@ import {
   X,
   Plus,
   Info,
+  Target,
+  Star,
+  Zap,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -79,6 +82,12 @@ export default function SettingsPage() {
   const [isLoadingSettings, setIsLoadingSettings] = useState(true);
   const [isSavingKeywords, setIsSavingKeywords] = useState(false);
 
+  // Scoring & Auto-shortlist settings
+  const [autoShortlistEnabled, setAutoShortlistEnabled] = useState(true);
+  const [autoShortlistThreshold, setAutoShortlistThreshold] = useState(80);
+  const [enrichmentThreshold, setEnrichmentThreshold] = useState(70);
+  const [isSavingScoring, setIsSavingScoring] = useState(false);
+
   // Fetch settings on mount
   useEffect(() => {
     const fetchSettings = async () => {
@@ -87,6 +96,10 @@ export default function SettingsPage() {
         if (response.ok) {
           const data = await response.json();
           setSearchKeywords(data.searchKeywords || []);
+          // Load scoring settings
+          setAutoShortlistEnabled(data.autoShortlistEnabled ?? true);
+          setAutoShortlistThreshold(data.autoShortlistThreshold ?? 80);
+          setEnrichmentThreshold(data.enrichmentThreshold ?? 70);
         }
       } catch (error) {
         console.error("Failed to fetch settings:", error);
@@ -125,6 +138,29 @@ export default function SettingsPage() {
       console.error("Failed to save keywords:", error);
     } finally {
       setIsSavingKeywords(false);
+    }
+  };
+
+  const handleSaveScoring = async () => {
+    setIsSavingScoring(true);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          autoShortlistEnabled,
+          autoShortlistThreshold,
+          enrichmentThreshold,
+        }),
+      });
+      if (response.ok) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      }
+    } catch (error) {
+      console.error("Failed to save scoring settings:", error);
+    } finally {
+      setIsSavingScoring(false);
     }
   };
 
@@ -175,6 +211,7 @@ export default function SettingsPage() {
               { value: "extension", label: "Extension", icon: Puzzle },
               { value: "selectors", label: "Selectors", icon: Database },
               { value: "search", label: "Search", icon: Search },
+              { value: "scoring", label: "Scoring", icon: Target },
               { value: "notifications", label: "Notifications", icon: Bell },
               { value: "appearance", label: "Appearance", icon: Palette },
             ].map((tab) => (
@@ -564,6 +601,143 @@ export default function SettingsPage() {
                     <>
                       <Save className="h-4 w-4 mr-2" />
                       Save Keywords
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Scoring Tab */}
+          <TabsContent value="scoring" className="space-y-6">
+            <Card className="bg-zinc-800/30 border-zinc-700/50">
+              <CardHeader>
+                <CardTitle className="text-zinc-100 flex items-center gap-2">
+                  <Target className="h-5 w-5 text-indigo-400" />
+                  Auto-Shortlist & Scoring
+                </CardTitle>
+                <CardDescription className="text-zinc-500">
+                  Configure how jobs are scored and automatically shortlisted
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Info Banner */}
+                <div className="p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+                  <div className="flex items-start gap-3">
+                    <Info className="h-5 w-5 text-indigo-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-sm text-indigo-300/90">
+                      <p className="font-medium mb-2">How scoring works:</p>
+                      <ul className="text-xs space-y-1.5 text-indigo-300/70">
+                        <li className="flex items-center gap-2">
+                          <Zap className="h-3 w-3 text-amber-400" />
+                          <span><strong>Enrichment Threshold:</strong> Jobs scoring above this get detailed info fetched automatically</span>
+                        </li>
+                        <li className="flex items-center gap-2">
+                          <Star className="h-3 w-3 text-yellow-400" />
+                          <span><strong>Auto-Shortlist Threshold:</strong> Jobs scoring above this are marked as high-priority leads</span>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Auto-Shortlist Toggle */}
+                <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/50">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-sm text-zinc-200 font-medium">
+                        Enable Auto-Shortlist
+                      </Label>
+                      <p className="text-[10px] text-zinc-500 mt-1">
+                        Automatically mark high-scoring jobs as shortlisted
+                      </p>
+                    </div>
+                    <Switch
+                      checked={autoShortlistEnabled}
+                      onCheckedChange={setAutoShortlistEnabled}
+                      className="data-[state=checked]:bg-indigo-600"
+                    />
+                  </div>
+                </div>
+
+                {/* Threshold Controls */}
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Auto-Shortlist Threshold */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                        <Star className="h-3.5 w-3.5 text-yellow-400" />
+                        Auto-Shortlist Threshold
+                      </Label>
+                      <span className="text-lg font-bold text-yellow-400">{autoShortlistThreshold}%</span>
+                    </div>
+                    <Input
+                      type="range"
+                      min={50}
+                      max={100}
+                      step={5}
+                      value={autoShortlistThreshold}
+                      onChange={(e) => setAutoShortlistThreshold(parseInt(e.target.value))}
+                      className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-yellow-400"
+                      disabled={!autoShortlistEnabled}
+                    />
+                    <p className="text-[10px] text-zinc-500">
+                      Jobs with match score ≥ {autoShortlistThreshold}% will be automatically shortlisted
+                    </p>
+                  </div>
+
+                  {/* Enrichment Threshold */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                        <Zap className="h-3.5 w-3.5 text-amber-400" />
+                        Enrichment Threshold
+                      </Label>
+                      <span className="text-lg font-bold text-amber-400">{enrichmentThreshold}%</span>
+                    </div>
+                    <Input
+                      type="range"
+                      min={30}
+                      max={90}
+                      step={5}
+                      value={enrichmentThreshold}
+                      onChange={(e) => setEnrichmentThreshold(parseInt(e.target.value))}
+                      className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
+                    />
+                    <p className="text-[10px] text-zinc-500">
+                      Jobs with match score ≥ {enrichmentThreshold}% will have full details fetched
+                    </p>
+                  </div>
+                </div>
+
+                {/* Warning if thresholds are inverted */}
+                {enrichmentThreshold > autoShortlistThreshold && (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                    <div className="flex items-center gap-2 text-xs text-amber-400">
+                      <Shield className="h-4 w-4" />
+                      <span>
+                        <strong>Note:</strong> Enrichment threshold ({enrichmentThreshold}%) is higher than shortlist threshold ({autoShortlistThreshold}%).
+                        Some shortlisted jobs may not have full details.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Save Button */}
+                <Button
+                  onClick={handleSaveScoring}
+                  disabled={isSavingScoring}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white"
+                >
+                  {isSavingScoring ? (
+                    <>
+                      <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-4 w-4 mr-2" />
+                      Save Scoring Settings
                     </>
                   )}
                 </Button>

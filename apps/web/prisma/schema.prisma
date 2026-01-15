@@ -150,6 +150,11 @@ model UserSettings {
   // Search Keywords for Discovery (JSON array)
   searchKeywords          String? @db.Text // ["AI", "generative AI", "AI automation", "n8n"]
 
+  // Auto-Shortlist & Scoring Thresholds
+  autoShortlistEnabled    Boolean @default(true) // Whether to auto-shortlist high-scoring jobs
+  autoShortlistThreshold  Int     @default(80)   // Min % score to auto-shortlist (0-100)
+  enrichmentThreshold     Int     @default(70)   // Min % score to trigger enrichment (0-100)
+
   @@index([userId])
 }
 

@@ -777,9 +777,14 @@ app.prepare().then(() => {
           sherlockData
         );
 
-        // Auto-shortlist threshold (Phase 3)
-        const AUTO_SHORTLIST_THRESHOLD = 80;
-        const shouldAutoShortlist = multiScore.winLikelihood >= AUTO_SHORTLIST_THRESHOLD;
+        // Fetch user settings for auto-shortlist threshold (Phase 3)
+        const userSettings = await prisma.userSettings.findUnique({
+          where: { userId },
+          select: { autoShortlistEnabled: true, autoShortlistThreshold: true },
+        });
+        const autoShortlistEnabled = userSettings?.autoShortlistEnabled ?? true;
+        const AUTO_SHORTLIST_THRESHOLD = userSettings?.autoShortlistThreshold ?? 80;
+        const shouldAutoShortlist = autoShortlistEnabled && multiScore.winLikelihood >= AUTO_SHORTLIST_THRESHOLD;
 
         // Prepare job data with all Sherlock fields + multi-score
         const jobData = {
@@ -1301,7 +1306,14 @@ app.prepare().then(() => {
       const { jobs, sourceCount } = result.data;
       console.log(`[Socket] DISCOVERY_COMPLETE: ${jobs.length} jobs from ${sourceCount} sources`);
 
-      const PRE_SHORTLIST_THRESHOLD = 70;
+      // Fetch user settings for thresholds
+      const userSettings = await prisma.userSettings.findUnique({
+        where: { userId },
+        select: { enrichmentThreshold: true, autoShortlistEnabled: true, autoShortlistThreshold: true },
+      });
+      const PRE_SHORTLIST_THRESHOLD = userSettings?.enrichmentThreshold ?? 70;
+      console.log(`[Socket] Using enrichment threshold: ${PRE_SHORTLIST_THRESHOLD}% for user ${userId}`);
+
       const qualifyingJobs: { url: string; jobId: string }[] = [];
       let newCount = 0;
       let existingCount = 0;
@@ -1499,7 +1511,15 @@ app.prepare().then(() => {
       const { enrichedJobs, totalRequested } = result.data;
       console.log(`[Socket] ENRICHMENT_COMPLETE: ${enrichedJobs.length}/${totalRequested} jobs enriched`);
 
-      const FINAL_SHORTLIST_THRESHOLD = 80;
+      // Fetch user settings for auto-shortlist
+      const userSettings = await prisma.userSettings.findUnique({
+        where: { userId },
+        select: { autoShortlistEnabled: true, autoShortlistThreshold: true },
+      });
+      const autoShortlistEnabled = userSettings?.autoShortlistEnabled ?? true;
+      const FINAL_SHORTLIST_THRESHOLD = userSettings?.autoShortlistThreshold ?? 80;
+      console.log(`[Socket] Using shortlist threshold: ${FINAL_SHORTLIST_THRESHOLD}%, enabled: ${autoShortlistEnabled}`);
+
       let shortlistedCount = 0;
 
       // Process each enriched job
@@ -1534,8 +1554,11 @@ app.prepare().then(() => {
             sherlockData
           );
 
-          const isShortlisted = multiScore.winLikelihood >= FINAL_SHORTLIST_THRESHOLD;
-          if (isShortlisted) shortlistedCount++;
+          // Only auto-shortlist if enabled and score meets threshold
+          // Don't override if already manually shortlisted
+          const shouldShortlist = autoShortlistEnabled && multiScore.winLikelihood >= FINAL_SHORTLIST_THRESHOLD;
+          const isShortlisted = shouldShortlist || existing.isShortlisted;
+          if (shouldShortlist && !existing.isShortlisted) shortlistedCount++;
 
           // Update job with enriched data
           const updatedJob = await prisma.job.update({
@@ -1550,7 +1573,7 @@ app.prepare().then(() => {
               scoreWinLikelihood: multiScore.winLikelihood,
               fitScore: multiScore.winLikelihood, // Keep legacy score updated
               isShortlisted,
-              shortlistedAt: isShortlisted ? new Date() : existing.shortlistedAt,
+              shortlistedAt: (shouldShortlist && !existing.isShortlisted) ? new Date() : existing.shortlistedAt,
               // Additional detail page data
               hasExternalLinks: job.hasExternalLinks ?? existing.hasExternalLinks,
               keywordsFound: job.skillsRequired ? JSON.stringify(job.skillsRequired) : existing.keywordsFound,

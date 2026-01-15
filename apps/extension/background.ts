@@ -2794,8 +2794,9 @@ function scrapeJobsFromPageInjected() {
     // Job card container (both structures)
     jobCard: '[data-test="JobTile"], [data-test="job-tile"], article.job-tile, .up-card-section',
 
-    // Job title - Structure 1 uses job-tile-title-link, Structure 2 uses job-description-text
-    title: '[data-test="job-tile-title-link"], [data-test="job-description-text"], .job-tile-title a, h2 a',
+    // Job title - MUST be actual title elements, NOT description
+    // UpCLineClamp with JobTile is for truncated titles, h2/h3/h4 are fallback headers
+    title: '[data-test="job-tile-title-link"], [data-test="UpCLineClamp JobTile"], .job-tile-title a, h2 a, h3 a, h4 a',
 
     // Job description
     description: '[data-test="job-description-text"], [data-test="UpCLineClamp JobDescription"], .job-tile-description',
@@ -3040,9 +3041,22 @@ function scrapeJobsFromPageInjected() {
 
   jobCardArray.forEach((card, index) => {
     try {
-      const title = getText(card, SELECTORS.title);
+      let title = getText(card, SELECTORS.title);
       const url = getHref(card, SELECTORS.title) || getHref(card, 'a[href*="/jobs/"]');
       const description = getText(card, SELECTORS.description).slice(0, 2000);
+
+      // Validate title - should never be longer than 200 chars (description would be longer)
+      // Also reject titles that look like descriptions (contain newlines or start with "About")
+      if (title.length > 200 || title.includes('\n') || title.startsWith('About ')) {
+        console.log(`[CAS Scraper] Card ${index}: title looks like description, trying URL`);
+        // Try to extract title from URL instead: /jobs/Title-Here_~xxxxx
+        const urlMatch = url.match(/\/jobs\/([^~_]+)/);
+        if (urlMatch) {
+          title = urlMatch[1].replace(/-/g, ' ').trim();
+        } else {
+          title = title.slice(0, 150); // Last resort: truncate
+        }
+      }
 
       if (!title || !url) {
         console.log(`[CAS Scraper] Skipping card ${index}: missing title or url`);

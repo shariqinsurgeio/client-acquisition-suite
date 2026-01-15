@@ -9,7 +9,10 @@ const DEFAULT_SEARCH_KEYWORDS = ["AI", "generative AI", "AI automation", "n8n"];
 // Validation schema for PATCH request
 const UpdateSettingsSchema = z.object({
   searchKeywords: z.array(z.string().min(1).max(100)).max(10).optional(),
-  // Add other settings fields here as needed
+  // Shortlist & Scoring Thresholds
+  autoShortlistEnabled: z.boolean().optional(),
+  autoShortlistThreshold: z.number().min(0).max(100).optional(),
+  enrichmentThreshold: z.number().min(0).max(100).optional(),
 });
 
 /**
@@ -35,6 +38,9 @@ export async function GET() {
         liveStreamEnabled: true,
         liveStreamIntervalSec: true,
         autoDeclineRateIncrease: true,
+        autoShortlistEnabled: true,
+        autoShortlistThreshold: true,
+        enrichmentThreshold: true,
       },
     });
 
@@ -52,6 +58,9 @@ export async function GET() {
       liveStreamEnabled: settings?.liveStreamEnabled || false,
       liveStreamIntervalSec: settings?.liveStreamIntervalSec || 60,
       autoDeclineRateIncrease: settings?.autoDeclineRateIncrease ?? true,
+      autoShortlistEnabled: settings?.autoShortlistEnabled ?? true,
+      autoShortlistThreshold: settings?.autoShortlistThreshold ?? 80,
+      enrichmentThreshold: settings?.enrichmentThreshold ?? 70,
     });
   } catch (error) {
     console.error("[API Settings GET] Error:", error);
@@ -82,6 +91,15 @@ export async function PATCH(req: NextRequest) {
 
     if (validated.searchKeywords !== undefined) {
       updateData.searchKeywords = JSON.stringify(validated.searchKeywords);
+    }
+    if (validated.autoShortlistEnabled !== undefined) {
+      updateData.autoShortlistEnabled = validated.autoShortlistEnabled;
+    }
+    if (validated.autoShortlistThreshold !== undefined) {
+      updateData.autoShortlistThreshold = validated.autoShortlistThreshold;
+    }
+    if (validated.enrichmentThreshold !== undefined) {
+      updateData.enrichmentThreshold = validated.enrichmentThreshold;
     }
 
     // Upsert user settings
