@@ -68,7 +68,7 @@ const SCRAPING_MODES = {
     minBetweenJobs: 5000,
     maxBetweenJobs: 10000,
     maxJobsPerSession: 30,
-    maxDetailVisitsPerDay: 15,
+    maxDetailVisitsPerDay: 50,   // Increased from 15
     minBetweenSources: 20000,
     maxBetweenSources: 35000,
   },
@@ -76,7 +76,7 @@ const SCRAPING_MODES = {
     minBetweenJobs: 3000,
     maxBetweenJobs: 6000,
     maxJobsPerSession: 50,
-    maxDetailVisitsPerDay: 30,
+    maxDetailVisitsPerDay: 100,  // Increased from 30
     minBetweenSources: 15000,
     maxBetweenSources: 25000,
   },
@@ -84,7 +84,7 @@ const SCRAPING_MODES = {
     minBetweenJobs: 2000,
     maxBetweenJobs: 4000,
     maxJobsPerSession: 100,
-    maxDetailVisitsPerDay: 50,
+    maxDetailVisitsPerDay: 150,  // Increased from 50
     minBetweenSources: 8000,
     maxBetweenSources: 15000,
   },
@@ -107,7 +107,7 @@ const RATE_LIMITS = {
   sessionCooldownMs: 300000,   // 5 min cooldown between full scrapes
   // Daily limits (account protection)
   maxJobsPerDay: 200,
-  maxDetailVisitsPerDay: 30,
+  maxDetailVisitsPerDay: 100,  // Increased from 30
   // Anti-detection patterns
   humanLikeScrollDelay: 1500,  // Delay before scrolling after page load
   readTimePerJob: 800,         // Simulated reading time per job card
@@ -939,6 +939,42 @@ async function executeEnrichJobs(platform: string, jobUrls: string[]) {
     jobType?: string;
     experienceLevel?: string;
     projectLength?: string;
+    // NEW: Job specifications
+    projectType?: string;
+    toolsRequired?: string[];
+    unansweredInvites?: number;
+    // Client data from detail page (all fields from About the Client section)
+    clientName?: string;
+    clientLocation?: string;
+    clientCity?: string;
+    clientCountry?: string;
+    clientLocalTime?: string;
+    clientMemberSince?: string;
+    clientTotalSpent?: number;
+    clientJobsPosted?: number;
+    clientTotalHires?: number;
+    clientActiveFreelancers?: number;
+    clientActiveJobs?: number;
+    clientAvgHourly?: number;
+    clientTotalHours?: number;
+    clientHireRate?: number;
+    clientRating?: number;
+    clientPaymentVerified?: boolean;
+    clientPhoneVerified?: boolean;
+    clientReviewCount?: number;
+    // NEW: Client history & other jobs
+    clientHistoryCount?: number;
+    clientRecentContracts?: ClientContract[];
+    clientOtherJobsCount?: number;
+    clientOtherJobs?: ClientOtherJob[];
+    // Job activity metrics
+    proposalCount?: number;
+    proposalTier?: string;
+    interviewingCount?: number;
+    invitesSent?: number;
+    lastViewedByClient?: string;
+    connectsCost?: number;
+    postedAgo?: string;
   }> = [];
 
   emitProgress(50, `🔍 Enriching ${jobUrls.length} qualifying jobs...`);
@@ -1012,25 +1048,66 @@ async function executeEnrichJobs(platform: string, jobUrls: string[]) {
         setTimeout(resolve, 15000);
       });
 
-      // Additional delay for Angular SPA to render content
-      console.log("[CAS] Tab loaded, waiting for SPA render...");
-      await humanDelay(3000, 4000);
+      // === SMART WAIT: Wait for actual content, not just page load ===
+      // Check for real content with retries
+      console.log("[CAS] Tab loaded, waiting for content to render...");
 
-      // Execute the scraper in the page context
-      console.log("[CAS] Executing scraper script...");
-      let results: chrome.scripting.InjectionResult<JobDetailResult | null>[] | null = null;
-      try {
-        results = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: scrapeJobDetailPage,
-        });
-      } catch (scriptError) {
-        console.error("[CAS] Script execution failed:", scriptError);
-        results = null;
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY = 2000;
+      let scrapeResult: JobDetailResult | undefined;
+
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        // Wait for SPA to render (longer on first attempt)
+        const waitTime = attempt === 1 ? 4000 : RETRY_DELAY;
+        await humanDelay(waitTime, waitTime + 1000);
+
+        console.log(`[CAS] Scrape attempt ${attempt}/${MAX_RETRIES}...`);
+
+        // Execute the scraper
+        let results: chrome.scripting.InjectionResult<JobDetailResult | null>[] | null = null;
+        try {
+          results = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: scrapeJobDetailPage,
+          });
+        } catch (scriptError) {
+          console.error("[CAS] Script execution failed:", scriptError);
+          results = null;
+        }
+
+        scrapeResult = results?.[0]?.result as JobDetailResult | undefined;
+        const descLength = scrapeResult?.description?.length || 0;
+
+        console.log(`[CAS] Attempt ${attempt} result: ${descLength} chars, expired: ${scrapeResult?.expired}`);
+
+        // Check if we got valid content
+        if (scrapeResult?.expired) {
+          console.log("[CAS] Job is expired, no need to retry");
+          break;
+        }
+
+        // Check for garbage/loading page indicators
+        const descLower = (scrapeResult?.description || "").toLowerCase();
+        const isGarbagePage =
+          descLower.includes("waiting for www.upwork.com") ||
+          descLower.includes("enable javascript") ||
+          descLower.includes("checking your browser") ||
+          descLower.includes("just a moment") ||
+          descLength < 200; // Too short to be real
+
+        if (!isGarbagePage && descLength > 200) {
+          console.log(`[CAS] Valid content found on attempt ${attempt}`);
+          break; // Success!
+        }
+
+        if (attempt < MAX_RETRIES) {
+          console.warn(`[CAS] Page not ready (garbage/loading detected), retrying in ${RETRY_DELAY}ms...`);
+        } else {
+          console.error(`[CAS] Failed to get valid content after ${MAX_RETRIES} attempts`);
+        }
       }
 
-      const scrapeResult = results?.[0]?.result as JobDetailResult | undefined;
-      console.log("[CAS] Scrape result:", scrapeResult?.description?.length || 0, "chars, expired:", scrapeResult?.expired);
+      console.log("[CAS] Final scrape result:", scrapeResult?.description?.length || 0, "chars, expired:", scrapeResult?.expired);
 
       // Close tab after extraction
       if (tabId) {
@@ -1046,9 +1123,49 @@ async function executeEnrichJobs(platform: string, jobUrls: string[]) {
           fullDescription: scrapeResult.description || "",
           skillsRequired: scrapeResult.skillsRequired,
           hasExternalLinks: scrapeResult.hasExternalLinks,
+          // Client data from detail page (all fields from About the Client section)
+          clientName: scrapeResult.clientName,
+          clientLocation: scrapeResult.clientLocation,
+          clientCity: scrapeResult.clientCity,
+          clientCountry: scrapeResult.clientCountry,
+          clientLocalTime: scrapeResult.clientLocalTime,
+          clientMemberSince: scrapeResult.clientMemberSince,
+          clientTotalSpent: scrapeResult.clientTotalSpent,
+          clientJobsPosted: scrapeResult.clientJobsPosted,
+          clientTotalHires: scrapeResult.clientTotalHires,
+          clientActiveFreelancers: scrapeResult.clientActiveFreelancers,
+          clientActiveJobs: scrapeResult.clientActiveJobs,
+          clientAvgHourly: scrapeResult.clientAvgHourly,
+          clientTotalHours: scrapeResult.clientTotalHours,
+          clientHireRate: scrapeResult.clientHireRate,
+          clientRating: scrapeResult.clientRating,
+          clientPaymentVerified: scrapeResult.clientPaymentVerified,
+          clientPhoneVerified: scrapeResult.clientPhoneVerified,
+          clientReviewCount: scrapeResult.clientReviewCount,
+          // NEW: Client history & other jobs
+          clientHistoryCount: scrapeResult.clientHistoryCount,
+          clientRecentContracts: scrapeResult.clientRecentContracts,
+          clientOtherJobsCount: scrapeResult.clientOtherJobsCount,
+          clientOtherJobs: scrapeResult.clientOtherJobs,
+          // Job activity metrics
+          proposalCount: scrapeResult.proposalCount,
+          proposalTier: scrapeResult.proposalTier,
+          interviewingCount: scrapeResult.interviewingCount,
+          invitesSent: scrapeResult.invitesSent,
+          lastViewedByClient: scrapeResult.lastViewedByClient,
+          // Job details
+          jobType: scrapeResult.jobType,
+          experienceLevel: scrapeResult.experienceLevel,
+          projectLength: scrapeResult.projectLength,
+          // NEW: Job specifications
+          projectType: scrapeResult.projectType,
+          toolsRequired: scrapeResult.toolsRequired,
+          unansweredInvites: scrapeResult.unansweredInvites,
+          connectsCost: scrapeResult.connectsCost,
+          postedAgo: scrapeResult.postedAgo,
         });
 
-        console.log(`[CAS] Enriched: ${shortTitle} (${scrapeResult.description?.length || 0} chars)`);
+        console.log(`[CAS] Enriched: ${shortTitle} (${scrapeResult.description?.length || 0} chars, hireRate: ${scrapeResult.clientHireRate || 'N/A'})`);
       } else if (scrapeResult?.expired) {
         console.warn(`[CAS] Job expired: ${shortTitle}`);
       } else {
@@ -1578,9 +1695,9 @@ interface ScrapedJob {
 // REFRESH JOBS COMMAND HANDLER
 // =============================================================================
 
-const REFRESH_BATCH_SIZE = 5; // Process 5 jobs at a time
-const REFRESH_DELAY_BETWEEN_JOBS = 3000; // 3 seconds between jobs
-const REFRESH_DELAY_BETWEEN_BATCHES = 8000; // 8 seconds between batches
+const REFRESH_BATCH_SIZE = 3; // Process 3 jobs at a time (reduced to avoid rate limiting)
+const REFRESH_DELAY_BETWEEN_JOBS = 5000; // 5 seconds between jobs (aligned with RATE_LIMITS)
+const REFRESH_DELAY_BETWEEN_BATCHES = 15000; // 15 seconds between batches (increased for cooldown)
 
 // Guard to prevent concurrent refresh operations
 let isRefreshInProgress = false;
@@ -1603,24 +1720,46 @@ async function executeRefreshJobs(platform: string, jobUrls: string[]) {
     return;
   }
 
+  // Check daily detail page limit before starting
+  checkAndResetDailyCounters();
+  const remainingAllowed = RATE_LIMITS.maxDetailVisitsPerDay - dailyCounters.detailPagesVisited;
+  if (remainingAllowed <= 0) {
+    console.warn("[CAS] Daily detail page limit reached, cannot refresh");
+    socket?.emit("TASK_UPDATE", {
+      status: "ERROR",
+      message: `Daily limit reached (${RATE_LIMITS.maxDetailVisitsPerDay} detail pages). Try again tomorrow.`,
+    });
+    return;
+  }
+
+  // Limit refresh to remaining daily quota
+  const effectiveUrls = remainingAllowed < jobUrls.length
+    ? jobUrls.slice(0, remainingAllowed)
+    : jobUrls;
+
+  if (effectiveUrls.length < jobUrls.length) {
+    console.log(`[CAS] Limiting refresh to ${effectiveUrls.length} jobs (daily quota: ${remainingAllowed} remaining)`);
+  }
+
   isRefreshInProgress = true;
   console.log("[CAS] Refresh lock acquired");
 
   try {
-    emitProgress(0, `REFRESHING ${jobUrls.length} jobs individually...`);
+    emitProgress(0, `REFRESHING ${effectiveUrls.length} jobs individually...`);
 
     let successCount = 0;
     let failCount = 0;
     let expiredCount = 0;
+    let blockedCount = 0; // Track rate-limited/blocked pages
 
     // Process jobs in batches
-    for (let batchStart = 0; batchStart < jobUrls.length; batchStart += REFRESH_BATCH_SIZE) {
-      const batch = jobUrls.slice(batchStart, batchStart + REFRESH_BATCH_SIZE);
+    for (let batchStart = 0; batchStart < effectiveUrls.length; batchStart += REFRESH_BATCH_SIZE) {
+      const batch = effectiveUrls.slice(batchStart, batchStart + REFRESH_BATCH_SIZE);
       const batchNum = Math.floor(batchStart / REFRESH_BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(jobUrls.length / REFRESH_BATCH_SIZE);
+      const totalBatches = Math.ceil(effectiveUrls.length / REFRESH_BATCH_SIZE);
 
       emitProgress(
-        Math.round((batchStart / jobUrls.length) * 100),
+        Math.round((batchStart / effectiveUrls.length) * 100),
         `Batch ${batchNum}/${totalBatches}: Refreshing ${batch.length} jobs...`
       );
 
@@ -1631,27 +1770,39 @@ async function executeRefreshJobs(platform: string, jobUrls: string[]) {
 
         try {
           emitProgress(
-            Math.round((overallIndex / jobUrls.length) * 100),
-            `[${overallIndex}/${jobUrls.length}] Refreshing job...`
+            Math.round((overallIndex / effectiveUrls.length) * 100),
+            `[${overallIndex}/${effectiveUrls.length}] Refreshing job...`
           );
 
           const result = await refreshSingleJob(platform, jobUrl);
 
+          // Count as detail page visit regardless of success (we still loaded the page)
+          dailyCounters.detailPagesVisited++;
+
           if (result.success) {
             successCount++;
-            console.log(`[CAS] Refreshed job ${overallIndex}/${jobUrls.length}: ${result.title?.slice(0, 40)}...`);
+            console.log(`[CAS] Refreshed job ${overallIndex}/${effectiveUrls.length}: ${result.title?.slice(0, 40)}...`);
           } else if (result.expired) {
             expiredCount++;
-            console.log(`[CAS] Job ${overallIndex}/${jobUrls.length} expired/removed`);
+            console.log(`[CAS] Job ${overallIndex}/${effectiveUrls.length} expired/removed`);
             // Notify server that job is expired
             socket?.emit("TASK_UPDATE", {
               status: "JOB_EXPIRED",
               jobUrl,
               message: "Job no longer available on Upwork",
             });
+          } else if (result.blocked) {
+            blockedCount++;
+            console.warn(`[CAS] Job ${overallIndex}/${effectiveUrls.length} blocked by rate limiting`);
+            // If we get 3 consecutive blocks, abort early
+            if (blockedCount >= 3) {
+              console.error("[CAS] Too many blocked requests, aborting refresh to avoid rate limit escalation");
+              emitProgress(100, `Aborting: Rate limited by Upwork (${blockedCount} blocked)`);
+              break;
+            }
           } else {
             failCount++;
-            console.warn(`[CAS] Failed to refresh job ${overallIndex}/${jobUrls.length}: ${result.error}`);
+            console.warn(`[CAS] Failed to refresh job ${overallIndex}/${effectiveUrls.length}: ${result.error}`);
           }
 
         } catch (err) {
@@ -1661,22 +1812,31 @@ async function executeRefreshJobs(platform: string, jobUrls: string[]) {
 
         // Delay between jobs (except last job in batch)
         if (i < batch.length - 1) {
-          await humanDelay(REFRESH_DELAY_BETWEEN_JOBS, REFRESH_DELAY_BETWEEN_JOBS + 1000);
+          await humanDelay(REFRESH_DELAY_BETWEEN_JOBS, REFRESH_DELAY_BETWEEN_JOBS + 2000);
         }
       }
 
+      // If blocked, exit the outer loop too
+      if (blockedCount >= 3) {
+        break;
+      }
+
       // Delay between batches (except last batch)
-      if (batchStart + REFRESH_BATCH_SIZE < jobUrls.length) {
+      if (batchStart + REFRESH_BATCH_SIZE < effectiveUrls.length) {
         emitProgress(
-          Math.round(((batchStart + batch.length) / jobUrls.length) * 100),
-          `Batch ${batchNum} complete. Waiting before next batch...`
+          Math.round(((batchStart + batch.length) / effectiveUrls.length) * 100),
+          `Batch ${batchNum} complete. Waiting ${REFRESH_DELAY_BETWEEN_BATCHES / 1000}s before next batch...`
         );
-        await humanDelay(REFRESH_DELAY_BETWEEN_BATCHES, REFRESH_DELAY_BETWEEN_BATCHES + 2000);
+        await humanDelay(REFRESH_DELAY_BETWEEN_BATCHES, REFRESH_DELAY_BETWEEN_BATCHES + 3000);
       }
     }
 
     // Emit completion with summary
-    const message = `Refreshed ${successCount} jobs. ${expiredCount > 0 ? `${expiredCount} expired. ` : ""}${failCount > 0 ? `${failCount} failed.` : ""}`;
+    const parts = [`Refreshed ${successCount} jobs.`];
+    if (expiredCount > 0) parts.push(`${expiredCount} expired.`);
+    if (blockedCount > 0) parts.push(`${blockedCount} blocked.`);
+    if (failCount > 0) parts.push(`${failCount} failed.`);
+    const message = parts.join(" ");
     console.log(`[CAS] Refresh complete: ${message}`);
 
     socket?.emit("TASK_UPDATE", {
@@ -1703,11 +1863,15 @@ async function executeRefreshJobs(platform: string, jobUrls: string[]) {
 interface RefreshResult {
   success: boolean;
   expired?: boolean;
+  blocked?: boolean;
   title?: string;
   error?: string;
 }
 
 async function refreshSingleJob(platform: string, jobUrl: string): Promise<RefreshResult> {
+  // RETRY CONSTANTS (matching executeEnrichJobs behavior)
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 2000;
   let tabId: number | undefined;
 
   try {
@@ -1715,33 +1879,77 @@ async function refreshSingleJob(platform: string, jobUrl: string): Promise<Refre
     const tab = await chrome.tabs.create({ url: jobUrl, active: false });
     tabId = tab.id!;
 
-    // Wait for page to load (increased for Angular SPA rendering)
-    await humanDelay(ENRICH_PAGE_LOAD_DELAY, ENRICH_PAGE_LOAD_DELAY + 1000);
+    let scrapeResult: JobDetailResult | undefined;
 
-    // Check if job still exists and extract data
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: scrapeJobDetailPage,
-    });
+    // RETRY LOOP - Same pattern as executeEnrichJobs (lines 1064-1110)
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      // First attempt: longer wait for initial page load
+      // Retries: shorter wait since page is already loading
+      const waitTime = attempt === 1 ? ENRICH_PAGE_LOAD_DELAY : RETRY_DELAY;
+      await humanDelay(waitTime, waitTime + 1000);
 
-    const scrapeResult = results[0]?.result as JobDetailResult | undefined;
+      // Execute scraper
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: scrapeJobDetailPage,
+      });
+      scrapeResult = results[0]?.result as JobDetailResult | undefined;
 
-    // Close tab immediately after scraping
+      // Log attempt for debugging
+      const descLength = scrapeResult?.description?.length || 0;
+      console.log(`[CAS] Refresh attempt ${attempt}/${MAX_RETRIES}: ${descLength} chars, expired: ${scrapeResult?.expired}, blocked: ${scrapeResult?.blocked}`);
+
+      // Early exit on expired (no point retrying a removed job)
+      if (scrapeResult?.expired) {
+        console.log(`[CAS] Job expired, stopping retries`);
+        break;
+      }
+
+      // Check for garbage/loading page (same logic as enrichment)
+      const descLower = scrapeResult?.description?.toLowerCase() || "";
+      const isGarbagePage =
+        descLower.includes("waiting for www.upwork.com") ||
+        descLower.includes("enable javascript") ||
+        descLower.includes("checking your browser") ||
+        descLower.includes("just a moment") ||
+        descLower.includes("access denied") ||
+        descLength < 200;
+
+      // Success: valid content found
+      if (!isGarbagePage && descLength > 200 && scrapeResult?.title) {
+        console.log(`[CAS] Valid content found on attempt ${attempt}`);
+        break;
+      }
+
+      // Not ready yet - retry if attempts remaining
+      if (attempt < MAX_RETRIES) {
+        console.log(`[CAS] Page not ready (${descLength} chars), retrying in ${RETRY_DELAY}ms...`);
+      } else {
+        console.warn(`[CAS] Failed to get valid content after ${MAX_RETRIES} attempts`);
+      }
+    }
+
+    // Close tab after all attempts
     if (tabId) {
       await chrome.tabs.remove(tabId).catch(() => {});
       tabId = undefined;
     }
 
+    // Validate final result
     if (!scrapeResult) {
-      return { success: false, error: "No scrape result" };
+      return { success: false, error: "No scrape result after retries" };
     }
 
     if (scrapeResult.expired) {
       return { success: false, expired: true };
     }
 
+    if (scrapeResult.blocked) {
+      return { success: false, blocked: true, error: "Rate limited or access denied" };
+    }
+
     if (!scrapeResult.title || !scrapeResult.description) {
-      return { success: false, error: "Missing required fields" };
+      return { success: false, error: "Missing required fields after retries" };
     }
 
     // Send refreshed data to server
@@ -1861,8 +2069,28 @@ async function enrichJobFromDetailPage(jobUrl: string): Promise<EnrichmentResult
   }
 }
 
+// Client contract from work history
+interface ClientContract {
+  title: string;
+  freelancerName?: string;
+  dateRange?: string;
+  hours?: number;
+  hourlyRate?: number;
+  billedAmount?: number;
+  rating?: number;
+  feedbackText?: string;
+}
+
+// Other open job by client
+interface ClientOtherJob {
+  title: string;
+  type?: string;
+  url: string;
+}
+
 interface JobDetailResult {
   expired: boolean;
+  blocked?: boolean; // Rate limited or access denied
   title?: string;
   description?: string;
   budget?: string;
@@ -1874,6 +2102,11 @@ interface JobDetailResult {
   hoursPerWeek?: string;
   skillsRequired?: string[];
 
+  // NEW: Job specifications
+  projectType?: string;
+  toolsRequired?: string[];
+  unansweredInvites?: number;
+
   // Job activity (NEW from Firecrawl analysis)
   proposalCount?: number;
   proposalTier?: string;
@@ -1884,17 +2117,28 @@ interface JobDetailResult {
   // Client info (enhanced from analysis)
   clientName?: string;
   clientLocation?: string;
+  clientCity?: string;
   clientCountry?: string;
+  clientLocalTime?: string;
   clientMemberSince?: string;
   clientTotalSpent?: number;
+  clientJobsPosted?: number;
   clientTotalHires?: number;
+  clientActiveFreelancers?: number;
   clientActiveJobs?: number;
   clientAvgHourly?: number;
   clientTotalHours?: number;
   clientHireRate?: number;
   clientRating?: number;
   clientPaymentVerified?: boolean;
+  clientPhoneVerified?: boolean;
   clientReviewCount?: number;
+
+  // NEW: Client history & other jobs
+  clientHistoryCount?: number;
+  clientRecentContracts?: ClientContract[];
+  clientOtherJobsCount?: number;
+  clientOtherJobs?: ClientOtherJob[];
 
   // Meta
   connectsCost?: number;
@@ -1904,7 +2148,7 @@ interface JobDetailResult {
 
 // Content script function to extract data from job detail page
 function scrapeJobDetailPage(): JobDetailResult | null {
-  const VERSION = "DETAIL-V5-2026-01-15";
+  const VERSION = "DETAIL-V6-2026-01-16";
 
   try {
     console.log(`[CAS Detail Scraper ${VERSION}] Running on:`, window.location.href);
@@ -2108,6 +2352,38 @@ function scrapeJobDetailPage(): JobDetailResult | null {
 
   console.log(`[CAS Detail Scraper ${VERSION}] Description extracted: ${description?.length || 0} chars`);
 
+  // === VALIDATION: Reject garbage/error page descriptions ===
+  const garbageIndicators = [
+    "waiting for www.upwork.com to respond",
+    "enable javascript and cookies to continue",
+    "please enable javascript",
+    "loading...",
+    "please wait",
+    "checking your browser",
+    "just a moment",
+    "verifying you are human",
+    "access denied",
+    "403 forbidden",
+    "404 not found",
+    "page not found",
+    "something went wrong",
+    "error loading",
+    "unable to load",
+  ];
+
+  const descLower = description.toLowerCase();
+  const isGarbageDescription = garbageIndicators.some(indicator => descLower.includes(indicator));
+
+  // Track if page was blocked/rate-limited (separate from expired)
+  let wasBlocked = false;
+
+  if (isGarbageDescription) {
+    console.warn(`[CAS Detail Scraper ${VERSION}] GARBAGE description detected, clearing it`);
+    console.warn(`[CAS Detail Scraper ${VERSION}] Garbage content: "${description.slice(0, 200)}..."`);
+    description = ""; // Clear garbage description so it won't overwrite good data
+    wasBlocked = true; // Mark as blocked for rate-limit detection
+  }
+
   // Last resort: find the largest text block in the page
   if (description.length < 100) {
     console.log(`[CAS Detail Scraper ${VERSION}] Description too short, trying fallback...`);
@@ -2133,19 +2409,50 @@ function scrapeJobDetailPage(): JobDetailResult | null {
   // Extract budget using verified selectors
   const budgetText = getText(DETAIL_SELECTORS.budget);
 
-  // Extract client info using verified selectors from Firecrawl analysis
-  const clientSection = document.querySelector(DETAIL_SELECTORS.clientSection);
+  // Extract client info using multiple fallback selectors
+  // Try multiple selectors for the client section - Upwork's DOM changes frequently
+  const clientSectionSelectors = [
+    '[data-test="about-client-container"]',
+    '[data-test="about-client"]',
+    '[data-qa="about-client"]',
+    '.client-info',
+    '[class*="client-info"]',
+    '[class*="about-client"]',
+    'section:has([data-test*="client"])',
+    'div:has([data-test="client-spend"])',
+    'div:has([data-test="buyer-rating"])',
+  ];
+
+  let clientSection: Element | null = null;
+  for (const sel of clientSectionSelectors) {
+    try {
+      clientSection = document.querySelector(sel);
+      if (clientSection) {
+        console.log(`[CAS Detail Scraper ${VERSION}] Found client section with: ${sel}`);
+        break;
+      }
+    } catch { /* invalid selector */ }
+  }
+
+  if (!clientSection) {
+    console.log(`[CAS Detail Scraper ${VERSION}] No client section found with any selector`);
+  }
 
   let clientName = "";
   let clientLocation = "";
+  let clientCity = "";
   let clientCountry = "";
+  let clientLocalTime = "";
   let clientMemberSince = "";
   let clientTotalSpent: number | undefined;
   let clientAvgHourly: number | undefined;
   let clientHireRate: number | undefined;
   let clientPaymentVerified = false;
+  let clientPhoneVerified = false;
   let clientReviewCount: number | undefined;
+  let clientJobsPosted: number | undefined;
   let clientTotalHires: number | undefined;
+  let clientActiveFreelancers: number | undefined;
   let clientActiveJobs: number | undefined;
   let clientTotalHours: number | undefined;
   let clientRating: number | undefined;
@@ -2156,18 +2463,38 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     // Client name (verified selector)
     clientName = getTextIn(clientSection, DETAIL_SELECTORS.clientName);
 
-    // Location (verified selector)
+    // Location (verified selector) - e.g., "Germany Bonn 12:45 AM" or "United States"
     clientLocation = getTextIn(clientSection, DETAIL_SELECTORS.clientLocation);
 
-    // Extract country from location
-    const countries = ["United States", "USA", "US", "United Kingdom", "UK", "Canada", "Australia", "Germany", "India", "Pakistan", "Philippines", "Netherlands", "France", "Spain", "Italy", "Brazil"];
+    // Extract country, city, and local time from location
+    const countries = ["United States", "USA", "US", "United Kingdom", "UK", "Canada", "Australia", "Germany", "India", "Pakistan", "Philippines", "Netherlands", "France", "Spain", "Italy", "Brazil", "Switzerland", "Sweden", "Norway", "Denmark", "Finland", "Ireland", "New Zealand", "Singapore", "Japan", "South Korea", "Israel", "UAE", "Saudi Arabia"];
     const locLower = clientLocation.toLowerCase();
+
+    // Extract local time (e.g., "12:45 AM" or "3:30 PM")
+    const timeMatch = clientLocation.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+    if (timeMatch) {
+      clientLocalTime = timeMatch[1];
+    }
+
+    // Extract country
     for (const country of countries) {
       if (locLower.includes(country.toLowerCase())) {
         clientCountry = country === "USA" || country === "US" ? "United States" : country === "UK" ? "United Kingdom" : country;
         break;
       }
     }
+
+    // Extract city (what remains after removing country and time)
+    if (clientLocation && clientCountry) {
+      let remaining = clientLocation
+        .replace(new RegExp(clientCountry, 'i'), '')
+        .replace(/\d{1,2}:\d{2}\s*(?:AM|PM)/i, '')
+        .trim();
+      if (remaining && remaining.length > 1 && remaining.length < 50) {
+        clientCity = remaining;
+      }
+    }
+
     if (!clientCountry && clientLocation.includes(",")) {
       clientCountry = clientLocation.split(",").pop()?.trim() || "";
     }
@@ -2217,10 +2544,94 @@ function scrapeJobDetailPage(): JobDetailResult | null {
                            clientText.toLowerCase().includes("payment verified") ||
                            clientText.toLowerCase().includes("payment method verified");
 
-    // Review count (from text pattern)
+    // Phone number verified (NEW)
+    clientPhoneVerified = clientText.toLowerCase().includes("phone number verified") ||
+                         clientText.toLowerCase().includes("phone verified");
+
+    // Review count (from text pattern) - e.g., "4.99 of 15 reviews"
     const reviewMatch = clientText.match(/(\d+)\s*(?:reviews?|ratings?)/i);
     if (reviewMatch) {
       clientReviewCount = parseInt(reviewMatch[1], 10);
+    }
+
+    // Jobs posted (NEW) - e.g., "40 jobs posted"
+    const jobsPostedMatch = clientText.match(/(\d+)\s*jobs?\s*posted/i);
+    if (jobsPostedMatch) {
+      clientJobsPosted = parseInt(jobsPostedMatch[1], 10);
+    }
+
+    // Active freelancers (NEW) - e.g., "46 hires, 24 active" or just "24 active"
+    const activeFreelancersMatch = clientText.match(/(\d+)\s*active/i);
+    if (activeFreelancersMatch) {
+      clientActiveFreelancers = parseInt(activeFreelancersMatch[1], 10);
+    }
+
+    // Open jobs from hire rate text (e.g., "70% hire rate, 5 open jobs")
+    const openJobsMatch = clientText.match(/(\d+)\s*open\s*jobs?/i);
+    if (openJobsMatch) {
+      clientActiveJobs = parseInt(openJobsMatch[1], 10);
+    }
+  } else {
+    // === FALLBACK: Extract from full page text when client section not found ===
+    console.log(`[CAS Detail Scraper ${VERSION}] Trying full page text extraction...`);
+
+    // Try to find individual data-test elements anywhere on the page
+    const spentEl = document.querySelector('[data-test="client-spend"]');
+    if (spentEl?.textContent) {
+      clientTotalSpent = parseMoney(spentEl.textContent);
+      console.log(`[CAS Detail Scraper ${VERSION}] Found total spent from element: ${clientTotalSpent}`);
+    }
+
+    const hireRateEl = document.querySelector('[data-test="client-job-posting-stats"]');
+    if (hireRateEl?.textContent) {
+      clientHireRate = parsePercent(hireRateEl.textContent);
+      console.log(`[CAS Detail Scraper ${VERSION}] Found hire rate from element: ${clientHireRate}`);
+    }
+
+    const avgHourlyEl = document.querySelector('[data-test="client-hourly-rate"]');
+    if (avgHourlyEl?.textContent) {
+      const match = avgHourlyEl.textContent.match(/\$?([\d.]+)/);
+      if (match) clientAvgHourly = parseFloat(match[1]);
+      console.log(`[CAS Detail Scraper ${VERSION}] Found avg hourly from element: ${clientAvgHourly}`);
+    }
+
+    const locationEl = document.querySelector('[data-test="client-location"]');
+    if (locationEl?.textContent) {
+      clientLocation = locationEl.textContent.trim();
+    }
+
+    const verifiedEl = document.querySelector('[data-test="UpCVerifiedBadge"], [data-test="payment-verified"]');
+    clientPaymentVerified = !!verifiedEl;
+
+    const ratingEl = document.querySelector('[data-test="buyer-rating"]');
+    if (ratingEl?.textContent) {
+      const match = ratingEl.textContent.match(/([\d.]+)/);
+      if (match) clientRating = parseFloat(match[1]);
+    }
+
+    // Last resort: regex from full page text
+    if (!clientTotalSpent) {
+      const spentMatch = pageText.match(/\$?([\d,]+(?:\.\d+)?[KMB]?)\s*(?:total\s*)?spent/i);
+      if (spentMatch) {
+        clientTotalSpent = parseMoney(spentMatch[0]);
+        console.log(`[CAS Detail Scraper ${VERSION}] Found total spent from regex: ${clientTotalSpent}`);
+      }
+    }
+
+    if (!clientHireRate) {
+      const hireMatch = pageText.match(/(\d+(?:\.\d+)?)\s*%\s*hire\s*rate/i);
+      if (hireMatch) {
+        clientHireRate = parseFloat(hireMatch[1]);
+        console.log(`[CAS Detail Scraper ${VERSION}] Found hire rate from regex: ${clientHireRate}`);
+      }
+    }
+
+    if (!clientAvgHourly) {
+      const hourlyMatch = pageText.match(/\$?([\d.]+)\s*\/\s*hr\s*avg/i);
+      if (hourlyMatch) {
+        clientAvgHourly = parseFloat(hourlyMatch[1]);
+        console.log(`[CAS Detail Scraper ${VERSION}] Found avg hourly from regex: ${clientAvgHourly}`);
+      }
     }
   }
 
@@ -2266,6 +2677,237 @@ function scrapeJobDetailPage(): JobDetailResult | null {
   const projectLength = getText(DETAIL_SELECTORS.projectLength);
   const hoursPerWeek = getText(DETAIL_SELECTORS.hoursPerWeek);
 
+  // === NEW: Extract Project Type ===
+  let projectType: string | undefined;
+  const projectTypeEl = document.querySelector('[data-test="project-type"], [data-test="engagement-type"]');
+  if (projectTypeEl?.textContent) {
+    projectType = projectTypeEl.textContent.trim();
+  } else {
+    // Fallback: search in page text
+    const pageTextLower = pageText.toLowerCase();
+    if (pageTextLower.includes("ongoing project")) projectType = "Ongoing project";
+    else if (pageTextLower.includes("one-time project")) projectType = "One-time project";
+  }
+
+  // === NEW: Extract Tools (separate from Skills) ===
+  const toolsSection = document.querySelector('[data-test="tools"], [data-qa="tools"]');
+  let toolsRequired: string[] = [];
+  if (toolsSection) {
+    const toolElements = toolsSection.querySelectorAll('span, [data-test="token"]');
+    toolsRequired = Array.from(toolElements)
+      .map(el => el.textContent?.trim())
+      .filter((t): t is string => !!t && t.length < 50 && t.length > 0);
+  }
+
+  // === NEW: Extract Unanswered Invites ===
+  let unansweredInvites: number | undefined;
+  const unansweredMatch = pageText.match(/Unanswered invites[:\s]*(\d+)/i);
+  if (unansweredMatch) {
+    unansweredInvites = parseInt(unansweredMatch[1], 10);
+  }
+
+  // === NEW: Extract Client Work History ===
+  let clientHistoryCount: number | undefined;
+  let clientRecentContracts: { title: string; freelancerName?: string; dateRange?: string; hours?: number; hourlyRate?: number; billedAmount?: number; rating?: number; feedbackText?: string; }[] = [];
+
+  // Find history section by various selectors
+  const historySelectors = [
+    '[data-test="work-history"]',
+    '[data-qa="work-history"]',
+    '[data-test="client-history"]',
+    'section:has(h3:contains("recent history"))',
+  ];
+
+  let historySection: Element | null = null;
+  for (const sel of historySelectors) {
+    try {
+      historySection = document.querySelector(sel);
+      if (historySection) break;
+    } catch { /* ignore invalid selectors */ }
+  }
+
+  // Try to find by heading text
+  if (!historySection) {
+    const headings = document.querySelectorAll('h2, h3, h4, [role="heading"]');
+    for (const h of headings) {
+      if (h.textContent?.toLowerCase().includes("recent history")) {
+        historySection = h.closest('section, div[class*="history"], div[class*="work-history"]') || h.parentElement;
+        break;
+      }
+    }
+  }
+
+  // Extract count from title like "Client's recent history (38)"
+  if (historySection) {
+    const historyHeading = historySection.querySelector('h2, h3, h4, [role="heading"]');
+    if (historyHeading?.textContent) {
+      const countMatch = historyHeading.textContent.match(/\((\d+)\)/);
+      if (countMatch) clientHistoryCount = parseInt(countMatch[1], 10);
+    }
+  }
+
+  // Also try to find count in page text
+  if (!clientHistoryCount) {
+    const historyCountMatch = pageText.match(/recent history\s*\((\d+)\)/i);
+    if (historyCountMatch) clientHistoryCount = parseInt(historyCountMatch[1], 10);
+  }
+
+  // Extract individual contracts
+  const contractItemSelectors = [
+    '[data-test="work-history-item"]',
+    '[data-qa="contract-card"]',
+    '[data-test="contract-tile"]',
+    '.work-history-item',
+    '[class*="contract-card"]',
+  ];
+
+  let contractItems: NodeListOf<Element> | Element[] = [];
+  for (const sel of contractItemSelectors) {
+    try {
+      const items = historySection
+        ? historySection.querySelectorAll(sel)
+        : document.querySelectorAll(sel);
+      if (items.length > 0) {
+        contractItems = items;
+        break;
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Parse each contract
+  for (const item of contractItems) {
+    try {
+      const itemText = item.textContent || "";
+
+      // Title
+      const titleEl = item.querySelector('[data-test="job-title"], [data-test="contract-title"], a, .title');
+      const title = titleEl?.textContent?.trim() || "";
+      if (!title) continue;
+
+      // Freelancer name
+      const nameEl = item.querySelector('[data-test="freelancer-name"], [data-test="contractor-name"], .freelancer-name');
+      const freelancerName = nameEl?.textContent?.trim();
+
+      // Date range
+      const dateEl = item.querySelector('[data-test="contract-dates"], [data-test="date-range"], .dates');
+      const dateRange = dateEl?.textContent?.trim();
+
+      // Hours - look for patterns like "22 hrs" or "311 hrs"
+      let hours: number | undefined;
+      const hoursMatch = itemText.match(/(\d+(?:,\d+)?)\s*hrs/i);
+      if (hoursMatch) hours = parseInt(hoursMatch[1].replace(',', ''), 10);
+
+      // Hourly rate - look for patterns like "$40.00/hr" or "@ $47.00/hr"
+      let hourlyRate: number | undefined;
+      const rateMatch = itemText.match(/\$\s*([\d.]+)\s*\/?\s*hr/i);
+      if (rateMatch) hourlyRate = parseFloat(rateMatch[1]);
+
+      // Billed amount - look for patterns like "Billed: $968.00" or "$15,330.47"
+      let billedAmount: number | undefined;
+      const billedMatch = itemText.match(/(?:Billed:?\s*)?\$([\d,]+(?:\.\d{2})?)/i);
+      if (billedMatch) billedAmount = parseFloat(billedMatch[1].replace(',', ''));
+
+      // Rating - look for star rating
+      let rating: number | undefined;
+      const ratingEl = item.querySelector('[data-test="rating"], .star-rating, [class*="rating"]');
+      if (ratingEl?.textContent) {
+        const ratingMatch = ratingEl.textContent.match(/([\d.]+)/);
+        if (ratingMatch) rating = parseFloat(ratingMatch[1]);
+      }
+
+      // Feedback text
+      const feedbackEl = item.querySelector('[data-test="feedback"], .feedback-text, .review-text');
+      const feedbackText = feedbackEl?.textContent?.trim()?.slice(0, 500);
+
+      clientRecentContracts.push({
+        title,
+        freelancerName,
+        dateRange,
+        hours,
+        hourlyRate,
+        billedAmount,
+        rating,
+        feedbackText,
+      });
+    } catch (e) {
+      console.warn(`[CAS Detail Scraper] Failed to parse contract:`, e);
+    }
+  }
+
+  console.log(`[CAS Detail Scraper ${VERSION}] Client history: ${clientRecentContracts.length}/${clientHistoryCount || '?'} contracts`);
+
+  // === NEW: Extract Other Open Jobs by Client ===
+  let clientOtherJobsCount: number | undefined;
+  let clientOtherJobs: { title: string; type?: string; url: string; }[] = [];
+
+  // Find other jobs section
+  const otherJobsSelectors = [
+    '[data-test="other-jobs"]',
+    '[data-qa="other-open-jobs"]',
+    '[data-test="client-other-jobs"]',
+  ];
+
+  let otherJobsSection: Element | null = null;
+  for (const sel of otherJobsSelectors) {
+    try {
+      otherJobsSection = document.querySelector(sel);
+      if (otherJobsSection) break;
+    } catch { /* ignore */ }
+  }
+
+  // Try to find by heading text
+  if (!otherJobsSection) {
+    const headings = document.querySelectorAll('h2, h3, h4, [role="heading"]');
+    for (const h of headings) {
+      if (h.textContent?.toLowerCase().includes("other open jobs")) {
+        otherJobsSection = h.closest('section, div[class*="other-jobs"]') || h.parentElement;
+        break;
+      }
+    }
+  }
+
+  // Extract count from title like "Other open jobs by this Client (4)"
+  if (otherJobsSection) {
+    const otherJobsHeading = otherJobsSection.querySelector('h2, h3, h4, [role="heading"]');
+    if (otherJobsHeading?.textContent) {
+      const countMatch = otherJobsHeading.textContent.match(/\((\d+)\)/);
+      if (countMatch) clientOtherJobsCount = parseInt(countMatch[1], 10);
+    }
+  }
+
+  // Also try page text
+  if (!clientOtherJobsCount) {
+    const otherJobsMatch = pageText.match(/other open jobs[^\d]*\((\d+)\)/i);
+    if (otherJobsMatch) clientOtherJobsCount = parseInt(otherJobsMatch[1], 10);
+  }
+
+  // Extract job links
+  const searchArea = otherJobsSection || document;
+  const otherJobLinks = searchArea.querySelectorAll('a[href*="/jobs/"]');
+  for (const link of otherJobLinks) {
+    const anchor = link as HTMLAnchorElement;
+    const url = anchor.href;
+    const title = anchor.textContent?.trim() || "";
+
+    // Skip if it's the current job or no title
+    if (!title || url === window.location.href) continue;
+
+    // Skip if already added (dedup by URL)
+    if (clientOtherJobs.some(j => j.url === url)) continue;
+
+    // Try to find job type nearby
+    const parent = anchor.closest('[data-test="job-tile"], .job-tile, li');
+    const typeEl = parent?.querySelector('[data-test="job-type"], .job-type, [class*="type"]');
+    const type = typeEl?.textContent?.trim();
+
+    clientOtherJobs.push({ title, type, url });
+  }
+
+  // Limit to 20 other jobs
+  clientOtherJobs = clientOtherJobs.slice(0, 20);
+
+  console.log(`[CAS Detail Scraper ${VERSION}] Other jobs: ${clientOtherJobs.length}/${clientOtherJobsCount || '?'}`);
+
   console.log(`[CAS Detail Scraper ${VERSION}] Extracted:`, {
     title: title?.slice(0, 50),
     descLen: description?.length,
@@ -2285,6 +2927,7 @@ function scrapeJobDetailPage(): JobDetailResult | null {
 
   return {
     expired: false,
+    blocked: wasBlocked,
     title: title || undefined,
     description: description || undefined,
     budget: budgetText || undefined,
@@ -2294,6 +2937,10 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     projectLength: projectLength || undefined,
     hoursPerWeek: hoursPerWeek || undefined,
     skillsRequired: skillsRequired.length > 0 ? skillsRequired : undefined,
+    // NEW: Job specifications
+    projectType: projectType || undefined,
+    toolsRequired: toolsRequired.length > 0 ? toolsRequired : undefined,
+    unansweredInvites,
     // Job activity (NEW)
     proposalCount,
     proposalTier,
@@ -2303,17 +2950,27 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     // Client info (enhanced)
     clientName: clientName || undefined,
     clientLocation: clientLocation || undefined,
+    clientCity: clientCity || undefined,
     clientCountry: clientCountry || undefined,
+    clientLocalTime: clientLocalTime || undefined,
     clientMemberSince: clientMemberSince || undefined,
     clientTotalSpent,
+    clientJobsPosted,
     clientTotalHires,
+    clientActiveFreelancers,
     clientActiveJobs,
     clientAvgHourly,
     clientTotalHours,
     clientHireRate,
     clientRating,
     clientPaymentVerified,
+    clientPhoneVerified,
     clientReviewCount,
+    // NEW: Client history & other jobs
+    clientHistoryCount,
+    clientRecentContracts: clientRecentContracts.length > 0 ? clientRecentContracts : undefined,
+    clientOtherJobsCount,
+    clientOtherJobs: clientOtherJobs.length > 0 ? clientOtherJobs : undefined,
     // Meta
     connectsCost,
     postedAgo: postedAgo || undefined,

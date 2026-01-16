@@ -31,6 +31,8 @@ import {
   MapPin,
   Star,
   CreditCard,
+  AlertCircle,
+  Check,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -157,6 +159,9 @@ export default function ScrapeHistoryPage() {
   // Job detail modal
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isUpdatingJob, setIsUpdatingJob] = useState(false);
+  const [jobUpdateError, setJobUpdateError] = useState<string | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     setIsLoading(true);
@@ -210,34 +215,38 @@ export default function ScrapeHistoryPage() {
   // Update job status (for quick actions)
   const updateJobStatus = useCallback(async (jobId: string, newStatus: string) => {
     setIsUpdatingJob(true);
+    setJobUpdateError(null);
     try {
       const res = await fetch(`/api/jobs/${jobId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
-      if (res.ok) {
-        // Update in allJobs
-        setAllJobs((prev) =>
-          prev.map((job) => (job.id === jobId ? { ...job, status: newStatus } : job))
-        );
-        // Update in operationJobs
-        setOperationJobs((prev) => {
-          const updated = { ...prev };
-          for (const opId in updated) {
-            updated[opId] = updated[opId].map((job) =>
-              job.id === jobId ? { ...job, status: newStatus } : job
-            );
-          }
-          return updated;
-        });
-        // Update selected job if open
-        setSelectedJob((prev) =>
-          prev && prev.id === jobId ? { ...prev, status: newStatus } : prev
-        );
+      if (!res.ok) {
+        throw new Error(`Failed to update status (${res.status})`);
       }
+      // Update in allJobs
+      setAllJobs((prev) =>
+        prev.map((job) => (job.id === jobId ? { ...job, status: newStatus } : job))
+      );
+      // Update in operationJobs
+      setOperationJobs((prev) => {
+        const updated = { ...prev };
+        for (const opId in updated) {
+          updated[opId] = updated[opId].map((job) =>
+            job.id === jobId ? { ...job, status: newStatus } : job
+          );
+        }
+        return updated;
+      });
+      // Update selected job if open
+      setSelectedJob((prev) =>
+        prev && prev.id === jobId ? { ...prev, status: newStatus } : prev
+      );
     } catch (err) {
-      console.error("Failed to update job status:", err);
+      console.error("[History] Failed to update job status:", err);
+      setJobUpdateError("Failed to update job status");
+      setTimeout(() => setJobUpdateError(null), 4000);
     } finally {
       setIsUpdatingJob(false);
     }
@@ -247,8 +256,13 @@ export default function ScrapeHistoryPage() {
   const copyToClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      setCopySuccess(true);
+      setCopyError(false);
+      setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {
-      console.error("Failed to copy:", err);
+      console.error("[History] Failed to copy:", err);
+      setCopyError(true);
+      setTimeout(() => setCopyError(false), 3000);
     }
   }, []);
 
@@ -1298,10 +1312,13 @@ export default function ScrapeHistoryPage() {
                     variant="ghost"
                     size="sm"
                     onClick={() => copyToClipboard(selectedJob.description || "")}
-                    className="h-6 px-2 text-xs text-zinc-400 hover:text-zinc-200"
+                    className={cn(
+                      "h-6 px-2 text-xs transition-all",
+                      copySuccess ? "text-emerald-400" : copyError ? "text-red-400" : "text-zinc-400 hover:text-zinc-200"
+                    )}
                   >
-                    <Copy className="h-3 w-3 mr-1" />
-                    Copy
+                    {copySuccess ? <Check className="h-3 w-3 mr-1" /> : copyError ? <AlertCircle className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+                    {copySuccess ? "Copied!" : copyError ? "Failed" : "Copy"}
                   </Button>
                 </div>
                 <div className="p-4 bg-zinc-800/30 rounded-xl border border-zinc-700/50 text-sm text-zinc-300 whitespace-pre-wrap max-h-80 overflow-y-auto">
@@ -1315,6 +1332,13 @@ export default function ScrapeHistoryPage() {
           {selectedJob && (
             <div className="flex-shrink-0 pt-4 border-t border-zinc-700/50">
               <div className="text-xs text-zinc-500 uppercase tracking-wider mb-3">Quick Actions</div>
+              {/* Error banner for job update */}
+              {jobUpdateError && (
+                <div className="flex items-center gap-2 p-2 mb-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                  <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />
+                  <span className="text-sm text-red-300">{jobUpdateError}</span>
+                </div>
+              )}
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
@@ -1331,10 +1355,15 @@ export default function ScrapeHistoryPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => copyToClipboard(selectedJob.description || "")}
-                  className="bg-zinc-800/50 border-zinc-700 text-zinc-300 hover:bg-zinc-700/50"
+                  className={cn(
+                    "transition-all",
+                    copySuccess ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" :
+                    copyError ? "bg-red-500/10 border-red-500/30 text-red-400" :
+                    "bg-zinc-800/50 border-zinc-700 text-zinc-300 hover:bg-zinc-700/50"
+                  )}
                 >
-                  <Copy className="h-4 w-4 mr-2" />
-                  Copy to Workbench
+                  {copySuccess ? <Check className="h-4 w-4 mr-2" /> : copyError ? <AlertCircle className="h-4 w-4 mr-2" /> : <Copy className="h-4 w-4 mr-2" />}
+                  {copySuccess ? "Copied!" : copyError ? "Failed to copy" : "Copy to Workbench"}
                 </Button>
                 {selectedJob.status !== "APPLIED" && (
                   <Button

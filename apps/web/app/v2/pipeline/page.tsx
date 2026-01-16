@@ -166,11 +166,22 @@ function convertToPipelineJob(job: Record<string, unknown>): PipelineJob {
       name: job.clientName as string | undefined,
       location: (job.clientLocation as string) || "Unknown",
       country: job.clientCountry as string | undefined,
+      city: job.clientCity as string | undefined,
+      localTime: job.clientLocalTime as string | undefined,
       totalSpent: (job.clientTotalSpent as number) || 0,
       avgHourlyPaid: (job.clientAvgHourly as number) || 0,
       hireRate: (job.clientHireRate as number) || 0,
       isPaymentVerified: (job.clientPaymentVerified as boolean) || false,
+      isPhoneVerified: (job.clientPhoneVerified as boolean) || false,
       reviewCount: job.clientReviewCount as number | undefined,
+      jobsPosted: job.clientJobsPosted as number | undefined,
+      totalHires: job.clientTotalHires as number | undefined,
+      activeFreelancers: job.clientActiveFreelancers as number | undefined,
+      // NEW: Client history & other jobs
+      historyCount: job.clientHistoryCount as number | undefined,
+      recentContracts: job.clientRecentContracts ? JSON.parse(job.clientRecentContracts as string) : undefined,
+      otherJobsCount: job.clientOtherJobsCount as number | undefined,
+      otherJobs: job.clientOtherJobs ? JSON.parse(job.clientOtherJobs as string) : undefined,
     },
     meta: {
       fitScore: (job.fitScore as number) || 50,
@@ -179,6 +190,14 @@ function convertToPipelineJob(job: Record<string, unknown>): PipelineJob {
       keywordsFound: [],
       dealBreakers: [],
       postedAgo: job.postedAgo as string | undefined,
+      // NEW: Job specifications
+      projectType: job.projectType as string | undefined,
+      toolsRequired: job.toolsRequired ? JSON.parse(job.toolsRequired as string) : undefined,
+      unansweredInvites: job.unansweredInvites as number | undefined,
+      budget: job.budget as number | undefined,
+      budgetMin: job.budgetMin as number | undefined,
+      budgetMax: job.budgetMax as number | undefined,
+      hoursPerWeek: job.hoursPerWeek as string | undefined,
     },
     stage: statusToStage(status),
     appliedAt: job.appliedAt ? new Date(job.appliedAt as string) : undefined,
@@ -500,22 +519,25 @@ export default function PipelinePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
-      if (res.ok) {
-        setJobs((prev) =>
-          prev.map((job) =>
-            job.id === jobId
-              ? { ...job, status: newStatus, stage: statusToStage(newStatus) }
-              : job
-          )
-        );
-        setSelectedJob((prev) =>
-          prev && prev.id === jobId
-            ? { ...prev, status: newStatus, stage: statusToStage(newStatus) }
-            : prev
-        );
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
+      setJobs((prev) =>
+        prev.map((job) =>
+          job.id === jobId
+            ? { ...job, status: newStatus, stage: statusToStage(newStatus) }
+            : job
+        )
+      );
+      setSelectedJob((prev) =>
+        prev && prev.id === jobId
+          ? { ...prev, status: newStatus, stage: statusToStage(newStatus) }
+          : prev
+      );
     } catch (err) {
-      console.error("Failed to update job status:", err);
+      console.error("[Pipeline] Failed to update job status:", err);
+      setToast({ message: "Failed to update job status", type: "error" });
+      setTimeout(() => setToast(null), 4000);
     } finally {
       setIsUpdatingJob(false);
     }
@@ -620,8 +642,12 @@ export default function PipelinePage() {
   const copyToClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      setToast({ message: "Copied to clipboard", type: "success" });
+      setTimeout(() => setToast(null), 2000);
     } catch (err) {
-      console.error("Failed to copy:", err);
+      console.error("[Pipeline] Failed to copy:", err);
+      setToast({ message: "Failed to copy to clipboard", type: "error" });
+      setTimeout(() => setToast(null), 3000);
     }
   }, []);
 

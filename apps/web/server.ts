@@ -97,6 +97,25 @@ const DiscoveryCompleteSchema = z.object({
   sourceCount: z.number(),
 });
 
+// Contract schema for client work history
+const ClientContractSchema = z.object({
+  title: z.string().max(500),
+  freelancerName: z.string().max(100).optional().nullable(),
+  dateRange: z.string().max(100).optional().nullable(),
+  hours: z.number().optional().nullable(),
+  hourlyRate: z.number().optional().nullable(),
+  billedAmount: z.number().optional().nullable(),
+  rating: z.number().min(0).max(5).optional().nullable(),
+  feedbackText: z.string().max(500).optional().nullable(),
+});
+
+// Other open jobs by the same client
+const ClientOtherJobSchema = z.object({
+  title: z.string().max(500),
+  type: z.string().max(50).optional().nullable(),
+  url: z.string().max(500), // Not requiring strict URL - Upwork URLs can be relative
+});
+
 // Enrichment Complete - jobs enriched with full descriptions
 const EnrichmentCompleteSchema = z.object({
   enrichedJobs: z.array(z.object({
@@ -108,6 +127,46 @@ const EnrichmentCompleteSchema = z.object({
     jobType: z.string().max(50).optional().nullable(),
     experienceLevel: z.string().max(100).optional().nullable(),
     projectLength: z.string().max(100).optional().nullable(),
+    // Client data from detail page (all fields from About the Client section)
+    clientName: z.string().max(200).optional().nullable(),
+    clientLocation: z.string().max(200).optional().nullable(),
+    clientCity: z.string().max(100).optional().nullable(),
+    clientCountry: z.string().max(100).optional().nullable(),
+    clientLocalTime: z.string().max(50).optional().nullable(),
+    clientMemberSince: z.string().max(100).optional().nullable(),
+    clientTotalSpent: z.number().optional().nullable(),
+    clientJobsPosted: z.number().optional().nullable(),
+    clientTotalHires: z.number().optional().nullable(),
+    clientActiveFreelancers: z.number().optional().nullable(),
+    clientActiveJobs: z.number().optional().nullable(),
+    clientAvgHourly: z.number().optional().nullable(),
+    clientTotalHours: z.number().optional().nullable(),
+    clientHireRate: z.number().optional().nullable(),
+    clientRating: z.number().optional().nullable(),
+    clientPaymentVerified: z.boolean().optional(),
+    clientPhoneVerified: z.boolean().optional(),
+    clientReviewCount: z.number().optional().nullable(),
+    // Job activity metrics (NEW)
+    proposalCount: z.number().optional().nullable(),
+    proposalTier: z.string().max(50).optional().nullable(),
+    interviewingCount: z.number().optional().nullable(),
+    invitesSent: z.number().optional().nullable(),
+    lastViewedByClient: z.string().max(100).optional().nullable(),
+    connectsCost: z.number().optional().nullable(),
+    postedAgo: z.string().max(100).optional().nullable(),
+    // NEW: Job specifications
+    projectType: z.string().max(50).optional().nullable(),
+    toolsRequired: z.array(z.string()).optional().nullable(),
+    unansweredInvites: z.number().optional().nullable(),
+    budget: z.number().optional().nullable(),
+    budgetMin: z.number().optional().nullable(),
+    budgetMax: z.number().optional().nullable(),
+    hoursPerWeek: z.string().max(100).optional().nullable(),
+    // NEW: Client history & other jobs
+    clientHistoryCount: z.number().optional().nullable(),
+    clientRecentContracts: z.array(ClientContractSchema).max(100).optional().nullable(),
+    clientOtherJobsCount: z.number().optional().nullable(),
+    clientOtherJobs: z.array(ClientOtherJobSchema).max(20).optional().nullable(),
   })),
   totalRequested: z.number(),
 });
@@ -1428,7 +1487,7 @@ app.prepare().then(() => {
       });
 
       // Queue enrichment for qualifying jobs (respect daily limit)
-      const MAX_ENRICHMENT_PER_RUN = 30;
+      const MAX_ENRICHMENT_PER_RUN = 100;  // Increased from 30
       const toEnrich = qualifyingJobs.slice(0, MAX_ENRICHMENT_PER_RUN).map(j => j.url);
 
       if (toEnrich.length > 0) {
@@ -1536,15 +1595,16 @@ app.prepare().then(() => {
           }
 
           // Re-calculate score with full description (Pass 2)
+          // Use enrichment data where available, fall back to existing data
           const sherlockData: SherlockData = {
-            clientTotalSpent: existing.clientTotalSpent,
-            clientHireRate: existing.clientHireRate,
-            clientPaymentVerified: existing.clientPaymentVerified,
-            clientReviewCount: existing.clientReviewCount,
-            connectsCost: existing.connectsCost,
+            clientTotalSpent: job.clientTotalSpent ?? existing.clientTotalSpent,
+            clientHireRate: job.clientHireRate ?? existing.clientHireRate,
+            clientPaymentVerified: job.clientPaymentVerified ?? existing.clientPaymentVerified,
+            clientReviewCount: job.clientReviewCount ?? existing.clientReviewCount,
+            connectsCost: job.connectsCost ?? existing.connectsCost,
             hasExternalLinks: job.hasExternalLinks ?? existing.hasExternalLinks,
-            clientCountry: existing.clientCountry,
-            postedAgo: existing.postedAgo,
+            clientCountry: job.clientCountry ?? existing.clientCountry,
+            postedAgo: job.postedAgo ?? existing.postedAgo,
           };
 
           const multiScore = calculateMultiScore(
@@ -1560,13 +1620,39 @@ app.prepare().then(() => {
           const isShortlisted = shouldShortlist || existing.isShortlisted;
           if (shouldShortlist && !existing.isShortlisted) shortlistedCount++;
 
-          // Update job with enriched data
+          // === VALIDATION: Don't overwrite good descriptions with garbage ===
+          const garbageIndicators = [
+            "waiting for www.upwork.com to respond",
+            "enable javascript and cookies to continue",
+            "please enable javascript",
+            "loading...",
+            "checking your browser",
+            "just a moment",
+            "verifying you are human",
+            "access denied",
+            "403 forbidden",
+            "404 not found",
+          ];
+          const newDescLower = job.fullDescription.toLowerCase();
+          const isGarbageDescription = garbageIndicators.some(ind => newDescLower.includes(ind));
+          const shouldUpdateDescription =
+            job.fullDescription.length > 100 && // Minimum meaningful length
+            !isGarbageDescription && // Not garbage/error content
+            (job.fullDescription.length >= (existing.description?.length || 0) * 0.5); // At least 50% of existing length
+
+          if (!shouldUpdateDescription && job.fullDescription.length > 0) {
+            console.warn(`[DB] Skipping description update - new desc appears to be garbage or too short`);
+            console.warn(`[DB] New desc (${job.fullDescription.length} chars): "${job.fullDescription.slice(0, 100)}..."`);
+          }
+
+          // Update job with enriched data including all client info
           const updatedJob = await prisma.job.update({
             where: { id: existing.id },
             data: {
-              description: job.fullDescription,
+              description: shouldUpdateDescription ? job.fullDescription : existing.description,
               needsEnrichment: false,
               enrichedAt: new Date(),
+              // Scores
               scoreRelevance: multiScore.relevance,
               scoreClientQuality: multiScore.clientQuality,
               scoreCompetition: multiScore.competition,
@@ -1574,13 +1660,47 @@ app.prepare().then(() => {
               fitScore: multiScore.winLikelihood, // Keep legacy score updated
               isShortlisted,
               shortlistedAt: (shouldShortlist && !existing.isShortlisted) ? new Date() : existing.shortlistedAt,
-              // Additional detail page data
+              // Client data from detail page (all fields from About the Client section)
+              clientName: job.clientName ?? existing.clientName,
+              clientLocation: job.clientLocation ?? existing.clientLocation,
+              clientCity: job.clientCity ?? existing.clientCity,
+              clientCountry: job.clientCountry ?? existing.clientCountry,
+              clientLocalTime: job.clientLocalTime ?? existing.clientLocalTime,
+              clientMemberSince: job.clientMemberSince ?? existing.clientMemberSince,
+              clientTotalSpent: job.clientTotalSpent ?? existing.clientTotalSpent,
+              clientJobsPosted: job.clientJobsPosted ?? existing.clientJobsPosted,
+              clientTotalHires: job.clientTotalHires ?? existing.clientTotalHires,
+              clientActiveFreelancers: job.clientActiveFreelancers ?? existing.clientActiveFreelancers,
+              clientActiveJobs: job.clientActiveJobs ?? existing.clientActiveJobs,
+              clientAvgHourly: job.clientAvgHourly ?? existing.clientAvgHourly,
+              clientTotalHours: job.clientTotalHours ?? existing.clientTotalHours,
+              clientHireRate: job.clientHireRate ?? existing.clientHireRate,
+              clientRating: job.clientRating ?? existing.clientRating,
+              clientPaymentVerified: job.clientPaymentVerified ?? existing.clientPaymentVerified,
+              clientPhoneVerified: job.clientPhoneVerified ?? existing.clientPhoneVerified,
+              clientReviewCount: job.clientReviewCount ?? existing.clientReviewCount,
+              // Job metadata from detail page
+              connectsCost: job.connectsCost ?? existing.connectsCost,
+              postedAgo: job.postedAgo ?? existing.postedAgo,
               hasExternalLinks: job.hasExternalLinks ?? existing.hasExternalLinks,
               keywordsFound: job.skillsRequired ? JSON.stringify(job.skillsRequired) : existing.keywordsFound,
+              // NEW: Job specifications
+              projectType: job.projectType ?? existing.projectType,
+              toolsRequired: job.toolsRequired?.length ? JSON.stringify(job.toolsRequired) : existing.toolsRequired,
+              unansweredInvites: job.unansweredInvites ?? existing.unansweredInvites,
+              budget: job.budget ?? existing.budget,
+              budgetMin: job.budgetMin ?? existing.budgetMin,
+              budgetMax: job.budgetMax ?? existing.budgetMax,
+              hoursPerWeek: job.hoursPerWeek ?? existing.hoursPerWeek,
+              // NEW: Client history & other open jobs
+              clientHistoryCount: job.clientHistoryCount ?? existing.clientHistoryCount,
+              clientRecentContracts: job.clientRecentContracts?.length ? JSON.stringify(job.clientRecentContracts) : existing.clientRecentContracts,
+              clientOtherJobsCount: job.clientOtherJobsCount ?? existing.clientOtherJobsCount,
+              clientOtherJobs: job.clientOtherJobs?.length ? JSON.stringify(job.clientOtherJobs) : existing.clientOtherJobs,
             },
           });
 
-          console.log(`[DB] Enriched job ${existing.id}: score ${multiScore.winLikelihood}, shortlisted: ${isShortlisted}`);
+          console.log(`[DB] Enriched job ${existing.id}: score ${multiScore.winLikelihood}, shortlisted: ${isShortlisted}, hireRate: ${job.clientHireRate ?? 'N/A'}, avgHourly: ${job.clientAvgHourly ?? 'N/A'}, historyCount: ${job.clientHistoryCount ?? 'N/A'}`);
 
           // Emit individual enrichment update
           io.to(`user:${userId}`).emit("JOB_ENRICHED", {

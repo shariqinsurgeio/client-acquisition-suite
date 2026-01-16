@@ -18,6 +18,8 @@ import {
   Check,
   Search,
   Sparkles,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -68,17 +70,33 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
   const [videoLinksOpen, setVideoLinksOpen] = useState(true);
   const [portfolioOpen, setPortfolioOpen] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copyErrorId, setCopyErrorId] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Fetch real assets
+  const fetchAssets = async () => {
+    setIsLoading(true);
+    setFetchError(null);
+    try {
+      const res = await fetch("/api/assets");
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setAssets(data);
+      }
+    } catch (err) {
+      console.error("[AssetVault] Failed to fetch assets:", err);
+      setFetchError("Failed to load assets");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
-    fetch("/api/assets")
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
-          setAssets(data);
-        }
-      })
-      .catch((err) => console.error("Failed to fetch assets:", err));
+    fetchAssets();
   }, []);
 
   const handleDragStart = (e: React.DragEvent, asset: Asset) => {
@@ -99,9 +117,16 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
 
   const handleCopyLink = async (e: React.MouseEvent, asset: Asset) => {
     e.stopPropagation();
-    await navigator.clipboard.writeText(asset.url);
-    setCopiedId(asset.id);
-    setTimeout(() => setCopiedId(null), 2000);
+    try {
+      await navigator.clipboard.writeText(asset.url);
+      setCopiedId(asset.id);
+      setCopyErrorId(null);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.error("[AssetVault] Failed to copy:", err);
+      setCopyErrorId(asset.id);
+      setTimeout(() => setCopyErrorId(null), 3000);
+    }
   };
 
   const getAssetIcon = (type: AssetType) => {
@@ -206,8 +231,32 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
       {/* Asset List */}
       <ScrollArea className="flex-1">
         <div className="p-3 space-y-3">
+          {/* Error Banner */}
+          {fetchError && (
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-red-500/10 border border-red-500/30">
+              <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />
+              <span className="text-sm text-red-300">{fetchError}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-7 text-xs text-red-300 hover:text-red-100 hover:bg-red-500/20"
+                onClick={fetchAssets}
+              >
+                <RefreshCw className="h-3 w-3 mr-1.5" />
+                Retry
+              </Button>
+            </div>
+          )}
+
+          {/* Loading State */}
+          {isLoading && (
+            <div className="flex items-center justify-center py-8">
+              <RefreshCw className="h-5 w-5 text-zinc-500 animate-spin" />
+            </div>
+          )}
+
           {/* Video Links Section */}
-          {videoAssets.length > 0 && (
+          {!isLoading && videoAssets.length > 0 && (
             <Collapsible open={videoLinksOpen} onOpenChange={setVideoLinksOpen}>
               <CollapsibleTrigger className="flex items-center gap-2 text-xs text-zinc-400 font-medium w-full p-2 rounded-lg hover:bg-zinc-800/30 transition-colors">
                 <ChevronRight
@@ -226,6 +275,7 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
                 {videoAssets.map((asset, index) => {
                   const Icon = getAssetIcon(asset.type);
                   const isCopied = copiedId === asset.id;
+                  const isCopyError = copyErrorId === asset.id;
                   return (
                     <div
                       key={asset.id}
@@ -268,14 +318,14 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
                                 size="icon"
                                 className={cn(
                                   "h-7 w-7 transition-all",
-                                  isCopied ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-100"
+                                  isCopied ? "text-emerald-400" : isCopyError ? "text-red-400" : "text-zinc-500 hover:text-zinc-100"
                                 )}
                                 onClick={(e) => handleCopyLink(e, asset)}
                               >
-                                {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                                {isCopied ? <Check className="h-3.5 w-3.5" /> : isCopyError ? <AlertCircle className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent>{isCopied ? "Copied!" : "Copy Link"}</TooltipContent>
+                            <TooltipContent>{isCopied ? "Copied!" : isCopyError ? "Failed to copy" : "Copy Link"}</TooltipContent>
                           </Tooltip>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -304,7 +354,7 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
           )}
 
           {/* Portfolio Section */}
-          {portfolioAssets.length > 0 && (
+          {!isLoading && portfolioAssets.length > 0 && (
             <Collapsible open={portfolioOpen} onOpenChange={setPortfolioOpen}>
               <CollapsibleTrigger className="flex items-center gap-2 text-xs text-zinc-400 font-medium w-full p-2 rounded-lg hover:bg-zinc-800/30 transition-colors">
                 <ChevronRight
@@ -323,6 +373,7 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
                 {portfolioAssets.map((asset, index) => {
                   const Icon = getAssetIcon(asset.type);
                   const isCopied = copiedId === asset.id;
+                  const isCopyError = copyErrorId === asset.id;
                   const colorClass = asset.type === "GITHUB" ? "text-zinc-400 bg-zinc-500/10 border-zinc-500/20" : "text-violet-400 bg-violet-500/10 border-violet-500/20";
                   return (
                     <div
@@ -365,14 +416,14 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
                                 size="icon"
                                 className={cn(
                                   "h-7 w-7 transition-all",
-                                  isCopied ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-100"
+                                  isCopied ? "text-emerald-400" : isCopyError ? "text-red-400" : "text-zinc-500 hover:text-zinc-100"
                                 )}
                                 onClick={(e) => handleCopyLink(e, asset)}
                               >
-                                {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                                {isCopied ? <Check className="h-3.5 w-3.5" /> : isCopyError ? <AlertCircle className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent>{isCopied ? "Copied!" : "Copy Link"}</TooltipContent>
+                            <TooltipContent>{isCopied ? "Copied!" : isCopyError ? "Failed to copy" : "Copy Link"}</TooltipContent>
                           </Tooltip>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -401,7 +452,7 @@ export function AssetVault({ onClose, onInsertLink }: AssetVaultProps) {
           )}
 
           {/* Empty State */}
-          {filteredAssets.length === 0 && (
+          {!isLoading && filteredAssets.length === 0 && (
             <div className="text-center py-12 px-4">
               <div className="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-zinc-800/50 mb-4">
                 <Sparkles className="h-7 w-7 text-zinc-500" />

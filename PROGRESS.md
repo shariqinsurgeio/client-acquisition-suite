@@ -620,6 +620,206 @@ Jobs showing 70-90% match scores on dashboard were NOT being shortlisted.
 
 ---
 
+## Session Changes (Jan 15, 2026 - Evening)
+
+### Client Data Enhancement - Phase 1 ✅ COMPLETED
+
+Enhanced "About the Client" data extraction to capture all available fields:
+
+**New Schema Fields Added:**
+- `clientCity` - City parsed from location (e.g., "Bonn")
+- `clientLocalTime` - Client's local time (e.g., "12:45 AM")
+- `clientPhoneVerified` - Phone number verification status
+- `clientJobsPosted` - Total jobs posted by client (e.g., 40)
+- `clientActiveFreelancers` - Currently active freelancers (e.g., 24)
+
+**Files Modified:**
+- `apps/web/prisma/schema.prisma` - Added 5 new client fields
+- `apps/extension/background.ts` - Updated scraper extraction logic
+- `apps/web/server.ts` - Updated Zod schema and DB save
+- `apps/web/lib/types.ts` - Updated JobClient interface
+- `apps/web/components/grandmaster/job-feed.tsx` - Added UI display (2 vitals rows, verification badges)
+- `apps/web/app/v2/pipeline/page.tsx` - Updated conversion function
+
+**UI Enhancements:**
+- **Vitals Row 1:** Avg Rate, Hire Rate, Total Spent (existing)
+- **Vitals Row 2:** Jobs Posted, Total Hires, Active FLs (only shows when enriched)
+- **Verification Badges:** ✓ Payment (green), ✓ Phone (blue), ⭐ X reviews (yellow)
+- **Location Row:** Now shows "City, Country" format with client's local time
+
+---
+
+## Session Changes (Jan 16, 2026)
+
+### Comprehensive Data Extraction Enhancement ✅ COMPLETED
+
+Implemented full data capture from Upwork job detail pages including client history, other open jobs, and job specifications.
+
+### User Decisions
+- **Client History**: Store ALL available contracts (10-100+)
+- **Other Jobs**: Full details with URLs
+- **UI Display**: All new data equally prominent
+
+### New Fields Added (7 total)
+1. `projectType` - "Ongoing project" | "One-time project"
+2. `toolsRequired` - JSON array of tools (separate from skills)
+3. `unansweredInvites` - Count of unanswered invites
+4. `clientHistoryCount` - Total contracts (e.g., 38)
+5. `clientRecentContracts` - JSON array of contract objects
+6. `clientOtherJobsCount` - Count of other open jobs
+7. `clientOtherJobs` - JSON array [{title, type, url}]
+
+### Also Now Persisted (budget fields)
+- `budget`, `budgetMin`, `budgetMax`, `hoursPerWeek`
+
+### Contract Object Schema
+```typescript
+interface ClientContract {
+  title: string;
+  freelancerName?: string;
+  dateRange?: string;
+  hours?: number;
+  hourlyRate?: number;
+  billedAmount?: number;
+  rating?: number;
+  feedbackText?: string;  // Truncated to 500 chars
+}
+```
+
+### Other Job Object Schema
+```typescript
+interface ClientOtherJob {
+  title: string;
+  type?: string;         // "Hourly" | "Fixed Price"
+  url: string;
+}
+```
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `apps/web/prisma/schema.prisma` | Added 7 new Job model fields |
+| `apps/extension/background.ts` | Added extraction for history, other jobs, specs |
+| `apps/web/server.ts` | Added Zod schemas + DB save logic |
+| `apps/web/lib/types.ts` | Added ClientContract, ClientOtherJob interfaces |
+| `apps/web/components/grandmaster/job-feed.tsx` | Added badges for all new data |
+| `apps/web/app/v2/pipeline/page.tsx` | Updated data conversion with JSON parsing |
+
+### UI Badges Added
+- **Purple**: 📋 X contracts (client history count)
+- **Cyan**: 📝 X open jobs (client other jobs count)
+- **Zinc**: Project type (Ongoing/One-time)
+- **Amber**: ⏱ Hours per week
+- **Emerald**: 💰 Budget (fixed or hourly range)
+- **Red**: ⚠ X unanswered invites
+- **Indigo**: Tools required (max 5 shown)
+
+### Migration
+`20260116010857_add_comprehensive_client_data`
+
+### Verification Checklist ✅
+```
+[x] Run prisma migrate dev
+[x] TypeScript typecheck passes (web + extension)
+[x] Restart server
+[x] All conversion functions updated
+[x] UI displays new badges
+```
+
+---
+
+## Session Changes (Jan 16, 2026 - Part 2)
+
+### Bulk Refresh Failure - Forensic Investigation & Fix ✅ COMPLETED
+
+**Issue:** Bulk job refresh (50 jobs) failed with 0/50 success rate, while individual job update worked perfectly.
+
+### Forensic Analysis
+
+Launched 3 parallel investigation agents to trace both code paths:
+
+| Aspect | Individual Update (WORKS) | Bulk Refresh (FAILS) |
+|--------|--------------------------|---------------------|
+| **Action** | `ENRICH_JOBS` | `REFRESH_JOBS` |
+| **Function** | `executeEnrichJobs()` (line 915) | `refreshSingleJob()` (line 1871) |
+| **Retry Logic** | **3 attempts, 2s delays** | **NO RETRIES (single shot)** |
+| **Wait Time** | 4000ms initial, then 2000ms | Fixed 6500ms only |
+| **Garbage Check** | Caller validates content >200 chars | Trusts scraper output blindly |
+| **Socket Event** | `ENRICHMENT_COMPLETE` | `DATA_INGEST` |
+
+### Root Cause
+
+`refreshSingleJob()` had **zero retry logic** - if Upwork's Angular SPA didn't fully render in one attempt (6.5s), the function immediately failed. Meanwhile, `executeEnrichJobs()` retried up to 3 times with garbage detection.
+
+When processing 50 jobs rapidly:
+1. First few jobs might succeed
+2. Upwork starts serving slower responses (anti-bot)
+3. Pages don't render in 6.5s → instant failure
+4. All remaining jobs fail because there's no second chance
+
+### Fix Applied
+
+Added retry logic to `refreshSingleJob()` matching `executeEnrichJobs()` pattern:
+
+```typescript
+// NEW: Retry loop (lines 1884-1930)
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000;
+
+for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  const waitTime = attempt === 1 ? ENRICH_PAGE_LOAD_DELAY : RETRY_DELAY;
+  await humanDelay(waitTime, waitTime + 1000);
+
+  // Execute scraper
+  const results = await chrome.scripting.executeScript({...});
+
+  // Same garbage detection as enrichment
+  const isGarbagePage =
+    descLower.includes("waiting for www.upwork.com") ||
+    descLower.includes("access denied") ||
+    descLength < 200;
+
+  if (!isGarbagePage && descLength > 200 && scrapeResult?.title) {
+    break; // Success!
+  }
+
+  // Retry if attempts remaining
+}
+```
+
+### Key Changes
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Retry attempts | 0 (single shot) | 3 attempts |
+| Initial wait | 6500ms fixed | 6500ms first, 2000ms retries |
+| Garbage detection | Only `blocked` flag | Pattern matching + length check |
+| Tab lifecycle | Close after 1 try | Close after all retries |
+| Success threshold | Any non-empty | Description >200 chars + title |
+
+### Previous Rate Limit Changes (also in this session)
+
+Earlier in this session, also added to `executeRefreshJobs()`:
+- Reduced batch size from 5 to 3 jobs
+- Increased delay between jobs from 3s to 5s
+- Increased delay between batches from 8s to 15s
+- Added daily limit check (30 pages/day)
+- Added blocked page counter with early abort on 3 consecutive blocks
+- Added `blockedCount` tracking and reporting
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `apps/extension/background.ts` | Added retry loop to `refreshSingleJob()`, rate limit constants, daily limit check |
+
+### Expected Result
+Bulk refresh success rate should increase from 0% to 80%+. Watch service worker console for:
+- `[CAS] Refresh attempt 1/3: X chars`
+- `[CAS] Page not ready (X chars), retrying...`
+- `[CAS] Valid content found on attempt N`
+
+---
+
 ## Quick Resume Commands
 
 ```bash

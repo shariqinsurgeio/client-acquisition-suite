@@ -6,6 +6,27 @@
  */
 
 // =============================================================================
+// CLIENT HISTORY TYPES (From Work History Section)
+// =============================================================================
+
+export interface ClientContract {
+  title: string;
+  freelancerName?: string;
+  dateRange?: string;
+  hours?: number;
+  hourlyRate?: number;
+  billedAmount?: number;
+  rating?: number;
+  feedbackText?: string;
+}
+
+export interface ClientOtherJob {
+  title: string;
+  type?: string;  // "Hourly" | "Fixed Price"
+  url: string;
+}
+
+// =============================================================================
 // JOB TYPES (The "Sherlock" Enriched Model)
 // =============================================================================
 
@@ -13,11 +34,22 @@ export interface JobClient {
   name?: string;              // The "Masood" - found in reviews
   location: string;           // For P.S. banter (e.g., "Dubai")
   country?: string;           // For Big Five filtering
+  city?: string;              // City only (e.g., "Bonn")
+  localTime?: string;         // Client's local time (e.g., "12:45 AM")
   totalSpent: number;         // Client's total spend on platform
   avgHourlyPaid: number;      // Critical metric for quality
   hireRate: number;           // 0-100, Critical metric
   isPaymentVerified: boolean; // Blue checkmark
+  isPhoneVerified: boolean;   // Phone number verified
   reviewCount?: number;       // Number of reviews (source for name finding)
+  jobsPosted?: number;        // Total jobs posted by client
+  totalHires?: number;        // Total freelancers hired
+  activeFreelancers?: number; // Currently active freelancers
+  // NEW: Client history & other jobs
+  historyCount?: number;        // Total contracts in history (e.g., 38)
+  recentContracts?: ClientContract[];  // Work history contracts
+  otherJobsCount?: number;      // Number of other open jobs
+  otherJobs?: ClientOtherJob[]; // Other open jobs by this client
 }
 
 export interface JobMeta {
@@ -27,6 +59,15 @@ export interface JobMeta {
   keywordsFound: string[];    // For highlighting (e.g., ["n8n", "scraping"])
   dealBreakers: string[];     // Red flags (e.g., ["Low Pay", "Unverified"])
   postedAgo?: string;         // "2 hours ago"
+
+  // NEW: Job specifications
+  projectType?: string;         // "Ongoing project" | "One-time project"
+  toolsRequired?: string[];     // Separate from skills (e.g., ["Asana", "Linear"])
+  unansweredInvites?: number;   // Count of unanswered invites
+  budget?: number;              // Fixed price amount
+  budgetMin?: number;           // Hourly min rate
+  budgetMax?: number;           // Hourly max rate
+  hoursPerWeek?: string;        // "Less than 30 hrs/week", etc.
 
   // Multi-score breakdown (Phase 2)
   scoreRelevance?: number;      // 0-100, keyword/skill match

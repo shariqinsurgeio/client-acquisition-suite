@@ -20,6 +20,7 @@ import {
   FileText,
   Link2,
   MapPin,
+  AlertCircle,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -93,6 +94,7 @@ export function WorkbenchV2({ job, onOpenVault }: WorkbenchV2Props) {
   const [descExpanded, setDescExpanded] = useState(true);
   const [copied, setCopied] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-select playbook based on hasExternalLinks
@@ -143,9 +145,16 @@ export function WorkbenchV2({ job, onOpenVault }: WorkbenchV2Props) {
   };
 
   const handleCopyProposal = async () => {
-    await navigator.clipboard.writeText(proposalText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(proposalText);
+      setCopied(true);
+      setCopyError(false);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("[Workbench] Failed to copy to clipboard:", err);
+      setCopyError(true);
+      setTimeout(() => setCopyError(false), 3000);
+    }
   };
 
   const insertPS = () => {
@@ -357,6 +366,7 @@ export function WorkbenchV2({ job, onOpenVault }: WorkbenchV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Generate with AI"
                     className="h-8 w-8 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-700/50"
                     onClick={generateProposal}
                   >
@@ -371,16 +381,17 @@ export function WorkbenchV2({ job, onOpenVault }: WorkbenchV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={copied ? "Copied" : copyError ? "Copy failed" : "Copy to clipboard"}
                     className={cn(
                       "h-8 w-8 hover:bg-zinc-700/50 transition-all",
-                      copied ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-100"
+                      copied ? "text-emerald-400" : copyError ? "text-red-400" : "text-zinc-500 hover:text-zinc-100"
                     )}
                     onClick={handleCopyProposal}
                   >
-                    {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    {copied ? <Check className="h-4 w-4" /> : copyError ? <AlertCircle className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="right">{copied ? "Copied!" : "Copy to Clipboard"}</TooltipContent>
+                <TooltipContent side="right">{copied ? "Copied!" : copyError ? "Failed to copy" : "Copy to Clipboard"}</TooltipContent>
               </Tooltip>
 
               <Tooltip>
@@ -388,6 +399,7 @@ export function WorkbenchV2({ job, onOpenVault }: WorkbenchV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Insert asset link"
                     className="h-8 w-8 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-700/50"
                     onClick={insertAssetLink}
                   >
@@ -404,6 +416,7 @@ export function WorkbenchV2({ job, onOpenVault }: WorkbenchV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Show variables"
                     className="h-8 w-8 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-700/50"
                   >
                     <Braces className="h-4 w-4" />

@@ -38,18 +38,34 @@ model Job {
 
   // === Client Data (The "Sherlock" Fields) ===
   clientName            String?  // Found in reviews (e.g., "Masood")
-  clientLocation        String?  // City/Region for P.S. banter
-  clientCountry         String?  // For Big Five filtering
+  clientLocation        String?  // Full location string (e.g., "Germany Bonn 12:45 AM")
+  clientCity            String?  // City only (e.g., "Bonn")
+  clientCountry         String?  // For Big Five filtering (e.g., "Germany")
+  clientLocalTime       String?  // Client's local time (e.g., "12:45 AM")
   clientTotalSpent      Float?   // Total spent on platform
   clientAvgHourly       Float?   // Avg hourly rate paid
   clientHireRate        Float?   // Hire rate 0-100
   clientPaymentVerified Boolean  @default(false)
+  clientPhoneVerified   Boolean  @default(false) // Phone number verified
   clientReviewCount     Int?     // Number of reviews
   clientMemberSince     String?  // "Member since Jan 2020"
-  clientTotalHires      Int?     // Total freelancers hired
-  clientActiveJobs      Int?     // Currently open jobs
+  clientJobsPosted      Int?     // Total jobs posted (e.g., 40)
+  clientTotalHires      Int?     // Total freelancers hired (e.g., 46)
+  clientActiveFreelancers Int?   // Currently active freelancers (e.g., 24)
+  clientActiveJobs      Int?     // Currently open jobs (e.g., 5)
   clientTotalHours      Int?     // Total hours worked with freelancers
   clientRating          Float?   // 1-5 star rating
+
+  // === NEW: Client History & Other Jobs ===
+  clientHistoryCount    Int?     // Total contracts in history (e.g., 38)
+  clientRecentContracts String?  @db.Text // JSON array of contract objects
+  clientOtherJobsCount  Int?     // Number of other open jobs by client
+  clientOtherJobs       String?  @db.Text // JSON array [{title, type, url}]
+
+  // === NEW: Job Specifications ===
+  projectType           String?  // "Ongoing project" | "One-time project"
+  toolsRequired         String?  @db.Text // JSON array of tools (separate from skills)
+  unansweredInvites     Int?     // Count of unanswered invites
 
   // === Meta Data (Strategic Metrics) ===
   fitScore              Int?     // 0-100 auto-calculated (legacy, use scoreWinLikelihood)

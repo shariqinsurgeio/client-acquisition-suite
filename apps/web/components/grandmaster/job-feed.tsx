@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   MoreHorizontal,
   BadgeCheck,
@@ -80,11 +80,22 @@ function convertLegacyJob(legacyJob: Record<string, unknown>): Job {
       name: legacyJob.clientName as string | undefined,
       location: (legacyJob.clientLocation as string) || "Unknown",
       country: legacyJob.clientCountry as string | undefined,
+      city: legacyJob.clientCity as string | undefined,
+      localTime: legacyJob.clientLocalTime as string | undefined,
       totalSpent: (legacyJob.clientTotalSpent as number) || 0,
       avgHourlyPaid: (legacyJob.clientAvgHourly as number) || 0,
       hireRate: (legacyJob.clientHireRate as number) || 0,
       isPaymentVerified: (legacyJob.clientPaymentVerified as boolean) || false,
+      isPhoneVerified: (legacyJob.clientPhoneVerified as boolean) || false,
       reviewCount: legacyJob.clientReviewCount as number | undefined,
+      jobsPosted: legacyJob.clientJobsPosted as number | undefined,
+      totalHires: legacyJob.clientTotalHires as number | undefined,
+      activeFreelancers: legacyJob.clientActiveFreelancers as number | undefined,
+      // NEW: Client history & other jobs
+      historyCount: legacyJob.clientHistoryCount as number | undefined,
+      recentContracts: legacyJob.clientRecentContracts ? JSON.parse(legacyJob.clientRecentContracts as string) : undefined,
+      otherJobsCount: legacyJob.clientOtherJobsCount as number | undefined,
+      otherJobs: legacyJob.clientOtherJobs ? JSON.parse(legacyJob.clientOtherJobs as string) : undefined,
     },
     meta: {
       fitScore,
@@ -93,6 +104,14 @@ function convertLegacyJob(legacyJob: Record<string, unknown>): Job {
       keywordsFound: [],
       dealBreakers: [],
       postedAgo: legacyJob.postedAgo as string | undefined,
+      // NEW: Job specifications
+      projectType: legacyJob.projectType as string | undefined,
+      toolsRequired: legacyJob.toolsRequired ? JSON.parse(legacyJob.toolsRequired as string) : undefined,
+      unansweredInvites: legacyJob.unansweredInvites as number | undefined,
+      budget: legacyJob.budget as number | undefined,
+      budgetMin: legacyJob.budgetMin as number | undefined,
+      budgetMax: legacyJob.budgetMax as number | undefined,
+      hoursPerWeek: legacyJob.hoursPerWeek as string | undefined,
       // Multi-score breakdown (Phase 2)
       scoreRelevance: legacyJob.scoreRelevance as number | undefined,
       scoreClientQuality: legacyJob.scoreClientQuality as number | undefined,
@@ -141,6 +160,9 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
   const { socket, scrapeProgress, extensionStatus } = useSocket();
   const extensionConnected = extensionStatus === "ONLINE";
 
+  // Ref for storing card elements to enable scroll-into-view
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
   // Fetch jobs
   const fetchJobs = useCallback(async () => {
     setIsRefreshing(true);
@@ -167,6 +189,19 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
     fetchJobs();
   }, [fetchJobs]);
 
+  // Scroll selected card into view when selection changes
+  useEffect(() => {
+    if (selectedJobId) {
+      // Small delay to ensure DOM is updated
+      requestAnimationFrame(() => {
+        const cardEl = cardRefs.current.get(selectedJobId);
+        if (cardEl) {
+          cardEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      });
+    }
+  }, [selectedJobId]);
+
   // Listen for real-time updates
   useEffect(() => {
     if (!socket) return;
@@ -184,9 +219,21 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
       setLastUpdate(new Date());
     };
 
-    const handleTaskUpdate = (data: { status?: string; scraped?: number }) => {
-      if (data.status === "COMPLETED" && data.scraped && data.scraped > 0) {
-        setTimeout(() => fetchJobs(), 1500);
+    // Unified TASK_UPDATE handler for both batch scraping and individual enrichment
+    const handleTaskUpdate = (data: { status?: string; scraped?: number; jobId?: string }) => {
+      if (data.status === "COMPLETED") {
+        // Batch scrape completion (has scraped count)
+        if (data.scraped && data.scraped > 0) {
+          setTimeout(() => fetchJobs(), 1500);
+        }
+        // Individual job enrichment completion (has jobId)
+        if (data.jobId) {
+          setUpdatingJobIds((prev) => {
+            const next = new Set(prev);
+            next.delete(data.jobId!);
+            return next;
+          });
+        }
       }
     };
 
@@ -203,27 +250,13 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
       fetchJobs();
     };
 
-    // Handle task updates for individual job enrichment
-    const handleEnrichmentTaskUpdate = (data: { status?: string; jobId?: string }) => {
-      if (data.status === "COMPLETED" && data.jobId) {
-        const jobId = data.jobId; // Capture for closure
-        setUpdatingJobIds((prev) => {
-          const next = new Set(prev);
-          next.delete(jobId);
-          return next;
-        });
-      }
-    };
-
     socket.on("JOB_UPDATE", handleJobUpdate);
     socket.on("TASK_UPDATE", handleTaskUpdate);
     socket.on("JOB_ENRICHED", handleJobEnriched);
-    socket.on("TASK_UPDATE", handleEnrichmentTaskUpdate);
     return () => {
       socket.off("JOB_UPDATE", handleJobUpdate);
       socket.off("TASK_UPDATE", handleTaskUpdate);
       socket.off("JOB_ENRICHED", handleJobEnriched);
-      socket.off("TASK_UPDATE", handleEnrichmentTaskUpdate);
     };
   }, [socket, fetchJobs]);
 
@@ -233,49 +266,51 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
     }
   }, [scrapeProgress?.progress, fetchJobs]);
 
-  // Filter and sort jobs
-  const filteredAndSortedJobs = [...jobs]
-    .filter((job) => {
-      // Search filter
-      if (filters.search) {
-        const searchLower = filters.search.toLowerCase();
-        if (
-          !job.title.toLowerCase().includes(searchLower) &&
-          !job.description.toLowerCase().includes(searchLower)
-        ) {
-          return false;
+  // Filter and sort jobs - memoized to prevent scroll reset on selection change
+  const filteredAndSortedJobs = useMemo(() => {
+    return [...jobs]
+      .filter((job) => {
+        // Search filter
+        if (filters.search) {
+          const searchLower = filters.search.toLowerCase();
+          if (
+            !job.title.toLowerCase().includes(searchLower) &&
+            !job.description.toLowerCase().includes(searchLower)
+          ) {
+            return false;
+          }
         }
-      }
-      // Fit score filter
-      if (job.meta.fitScore < filters.minFitScore) return false;
-      // Has links filter
-      if (filters.hasLinks !== null && job.meta.hasExternalLinks !== filters.hasLinks) return false;
-      // Payment verified filter
-      if (filters.paymentVerified !== null && job.client.isPaymentVerified !== filters.paymentVerified) return false;
-      // Shortlist filter (Phase 3)
-      if (filters.shortlistedOnly && !job.meta.isShortlisted) return false;
-      // Status filter
-      if (filters.status.length > 0 && !filters.status.includes(job.status)) return false;
-      // Platform filter
-      if (filters.platforms.length > 0 && !filters.platforms.includes(job.platform)) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case "fitScore":
-          return b.meta.fitScore - a.meta.fitScore;
-        case "newest":
-          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-        case "oldest":
-          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-        case "connects":
-          return (a.meta.connectsCost || 0) - (b.meta.connectsCost || 0);
-        case "budget":
-          return (b.client.totalSpent || 0) - (a.client.totalSpent || 0);
-        default:
-          return b.meta.fitScore - a.meta.fitScore;
-      }
-    });
+        // Fit score filter
+        if (job.meta.fitScore < filters.minFitScore) return false;
+        // Has links filter
+        if (filters.hasLinks !== null && job.meta.hasExternalLinks !== filters.hasLinks) return false;
+        // Payment verified filter
+        if (filters.paymentVerified !== null && job.client.isPaymentVerified !== filters.paymentVerified) return false;
+        // Shortlist filter (Phase 3)
+        if (filters.shortlistedOnly && !job.meta.isShortlisted) return false;
+        // Status filter
+        if (filters.status.length > 0 && !filters.status.includes(job.status)) return false;
+        // Platform filter
+        if (filters.platforms.length > 0 && !filters.platforms.includes(job.platform)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        switch (sortBy) {
+          case "fitScore":
+            return b.meta.fitScore - a.meta.fitScore;
+          case "newest":
+            return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          case "oldest":
+            return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          case "connects":
+            return (a.meta.connectsCost || 0) - (b.meta.connectsCost || 0);
+          case "budget":
+            return (b.client.totalSpent || 0) - (a.client.totalSpent || 0);
+          default:
+            return b.meta.fitScore - a.meta.fitScore;
+        }
+      });
+  }, [jobs, filters, sortBy]);
 
   const activeFilterCount = [
     filters.search ? 1 : 0,
@@ -396,6 +431,10 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
   const renderJobCard = (job: Job, index: number) => (
     <div
       key={job.id}
+      ref={(el) => {
+        if (el) cardRefs.current.set(job.id, el);
+        else cardRefs.current.delete(job.id);
+      }}
       onClick={() => onSelectJob(job)}
       style={{ animationDelay: `${index * 30}ms` }}
       className={cn(
@@ -430,6 +469,7 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
             <Button
               variant="ghost"
               size="icon"
+              aria-label="Job actions menu"
               className="h-6 w-6 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
@@ -568,7 +608,7 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
         )}
 
         <Badge className="bg-purple-500/15 text-purple-400 border-purple-500/30 text-[10px] px-2 py-0.5 font-medium">
-          {job.meta.connectsCost || 16} Connects
+          {job.meta.connectsCost ? `${job.meta.connectsCost} Connects` : "— Connects"}
         </Badge>
       </div>
 
@@ -582,31 +622,153 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
         </div>
       )}
 
-      {/* Vitals Grid */}
+      {/* Vitals Grid - Row 1: Money Metrics */}
       <div className="grid grid-cols-3 gap-3 text-xs">
         <div className="flex flex-col">
           <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Avg Rate</span>
-          <span className="text-zinc-100 font-medium">${job.client.avgHourlyPaid || 55}/hr</span>
+          {job.client.avgHourlyPaid ? (
+            <span className="text-zinc-100 font-medium">${job.client.avgHourlyPaid}/hr</span>
+          ) : (
+            <span className="text-zinc-500 text-[9px] italic">update job(s) to display</span>
+          )}
         </div>
         <div className="flex flex-col">
           <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Hire Rate</span>
-          <span className="text-zinc-100 font-medium">{job.client.hireRate || 42}%</span>
+          {job.client.hireRate ? (
+            <span className="text-zinc-100 font-medium">{job.client.hireRate}%</span>
+          ) : (
+            <span className="text-zinc-500 text-[9px] italic">update job(s) to display</span>
+          )}
         </div>
         <div className="flex flex-col">
           <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Total Spent</span>
-          <span className="text-zinc-100 font-medium">${(job.client.totalSpent || 0).toLocaleString()}</span>
+          {job.client.totalSpent ? (
+            <span className="text-zinc-100 font-medium">${job.client.totalSpent.toLocaleString()}</span>
+          ) : (
+            <span className="text-zinc-500 text-[9px] italic">update job(s) to display</span>
+          )}
         </div>
       </div>
+
+      {/* Vitals Grid - Row 2: Activity Metrics (only show if enriched) */}
+      {(job.client.jobsPosted || job.client.totalHires || job.client.activeFreelancers) && (
+        <div className="grid grid-cols-3 gap-3 text-xs mt-2">
+          <div className="flex flex-col">
+            <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Jobs Posted</span>
+            <span className="text-zinc-100 font-medium">{job.client.jobsPosted ?? "—"}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Total Hires</span>
+            <span className="text-zinc-100 font-medium">{job.client.totalHires ?? "—"}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Active FLs</span>
+            <span className="text-zinc-100 font-medium">{job.client.activeFreelancers ?? "—"}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Verification Badges */}
+      <div className="flex items-center gap-2 mt-2">
+        {job.client.isPaymentVerified && (
+          <Badge className="bg-green-500/15 text-green-400 border-green-500/30 text-[9px] px-1.5 py-0.5">
+            ✓ Payment
+          </Badge>
+        )}
+        {job.client.isPhoneVerified && (
+          <Badge className="bg-blue-500/15 text-blue-400 border-blue-500/30 text-[9px] px-1.5 py-0.5">
+            ✓ Phone
+          </Badge>
+        )}
+        {job.client.reviewCount !== undefined && job.client.reviewCount > 0 && (
+          <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/30 text-[9px] px-1.5 py-0.5">
+            ⭐ {job.client.reviewCount} reviews
+          </Badge>
+        )}
+      </div>
+
+      {/* Client History & Other Jobs Badges */}
+      {(job.client.historyCount !== undefined || job.client.otherJobsCount !== undefined) && (
+        <div className="flex items-center gap-2 mt-2">
+          {job.client.historyCount !== undefined && job.client.historyCount > 0 && (
+            <Badge className="bg-purple-500/15 text-purple-400 border-purple-500/30 text-[9px] px-1.5 py-0.5">
+              📋 {job.client.historyCount} contracts
+            </Badge>
+          )}
+          {job.client.otherJobsCount !== undefined && job.client.otherJobsCount > 0 && (
+            <Badge className="bg-cyan-500/15 text-cyan-400 border-cyan-500/30 text-[9px] px-1.5 py-0.5">
+              📝 {job.client.otherJobsCount} open jobs
+            </Badge>
+          )}
+        </div>
+      )}
+
+      {/* Job Specifications Badges */}
+      {(job.meta.projectType || job.meta.hoursPerWeek || job.meta.budget || job.meta.budgetMin) && (
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          {job.meta.projectType && (
+            <Badge className="bg-zinc-500/15 text-zinc-400 border-zinc-500/30 text-[9px] px-1.5 py-0.5">
+              {job.meta.projectType}
+            </Badge>
+          )}
+          {job.meta.hoursPerWeek && (
+            <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-[9px] px-1.5 py-0.5">
+              ⏱ {job.meta.hoursPerWeek}
+            </Badge>
+          )}
+          {job.meta.budget ? (
+            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[9px] px-1.5 py-0.5">
+              💰 ${job.meta.budget.toLocaleString()} fixed
+            </Badge>
+          ) : job.meta.budgetMin && job.meta.budgetMax ? (
+            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[9px] px-1.5 py-0.5">
+              💰 ${job.meta.budgetMin}-${job.meta.budgetMax}/hr
+            </Badge>
+          ) : null}
+          {job.meta.unansweredInvites !== undefined && job.meta.unansweredInvites > 0 && (
+            <Badge className="bg-red-500/15 text-red-400 border-red-500/30 text-[9px] px-1.5 py-0.5">
+              ⚠ {job.meta.unansweredInvites} unanswered invites
+            </Badge>
+          )}
+        </div>
+      )}
+
+      {/* Tools Required */}
+      {job.meta.toolsRequired && job.meta.toolsRequired.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          <span className="text-zinc-500 text-[10px] uppercase tracking-wider mr-1">Tools:</span>
+          {job.meta.toolsRequired.slice(0, 5).map((tool, i) => (
+            <Badge key={i} className="bg-indigo-500/15 text-indigo-400 border-indigo-500/30 text-[9px] px-1.5 py-0.5">
+              {tool}
+            </Badge>
+          ))}
+          {job.meta.toolsRequired.length > 5 && (
+            <span className="text-zinc-500 text-[9px]">+{job.meta.toolsRequired.length - 5} more</span>
+          )}
+        </div>
+      )}
 
       {/* Footer: Location & Timestamps */}
       <div className="mt-3 pt-2 border-t border-zinc-800/50 space-y-1.5">
         {/* Location Row */}
-        {(job.client.location !== "Unknown" || job.client.country) && (
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-zinc-500">📍</span>
-            <span className="text-zinc-400">
-              {job.client.location !== "Unknown" ? job.client.location : job.client.country}
-            </span>
+        {(job.client.location !== "Unknown" || job.client.country || job.client.city) && (
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-500">📍</span>
+              <span className="text-zinc-400">
+                {job.client.city && job.client.country
+                  ? `${job.client.city}, ${job.client.country}`
+                  : job.client.location !== "Unknown"
+                    ? job.client.location
+                    : job.client.country}
+              </span>
+            </div>
+            {job.client.localTime && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-zinc-600">🕐</span>
+                <span className="text-zinc-400">{job.client.localTime}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -681,9 +843,27 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
                   </span>
                 </div>
               </td>
-              <td className="px-3 py-2 text-zinc-300">${(job.client.totalSpent || 0).toLocaleString()}</td>
-              <td className="px-3 py-2 text-zinc-300">${job.client.avgHourlyPaid || 0}/hr</td>
-              <td className="px-3 py-2 text-purple-400">{job.meta.connectsCost || 16}</td>
+              <td className="px-3 py-2">
+                {job.client.totalSpent ? (
+                  <span className="text-zinc-300">${job.client.totalSpent.toLocaleString()}</span>
+                ) : (
+                  <span className="text-zinc-500 text-[9px] italic">update</span>
+                )}
+              </td>
+              <td className="px-3 py-2">
+                {job.client.avgHourlyPaid ? (
+                  <span className="text-zinc-300">${job.client.avgHourlyPaid}/hr</span>
+                ) : (
+                  <span className="text-zinc-500 text-[9px] italic">update</span>
+                )}
+              </td>
+              <td className="px-3 py-2">
+                {job.meta.connectsCost ? (
+                  <span className="text-purple-400">{job.meta.connectsCost}</span>
+                ) : (
+                  <span className="text-zinc-500 text-[9px] italic">—</span>
+                )}
+              </td>
               <td className="px-3 py-2">
                 {job.meta.hasExternalLinks ? (
                   <LinkIcon className="h-4 w-4 text-emerald-400" />
@@ -700,6 +880,7 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Update job"
                     className={cn(
                       "h-6 w-6",
                       updatingJobIds.has(job.id)
@@ -718,6 +899,7 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={job.meta.isShortlisted ? "Remove from shortlist" : "Add to shortlist"}
                     className={cn(
                       "h-6 w-6",
                       job.meta.isShortlisted
@@ -735,6 +917,7 @@ export function JobFeedV2({ onSelectJob, selectedJobId }: JobFeedV2Props) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Open job in Upwork"
                     className="h-6 w-6 text-zinc-500 hover:text-zinc-100"
                     onClick={(e) => {
                       e.stopPropagation();
