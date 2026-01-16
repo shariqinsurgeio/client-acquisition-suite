@@ -521,14 +521,14 @@ function calculateMultiScore(
   // ==========================================================================
   // 2. CLIENT QUALITY SCORE (0-100) - How reliable is this client?
   // ==========================================================================
-  let clientQuality = 50; // Base - unknown client
+  let clientQuality = 60; // Base - less pessimistic about unknowns
 
   if (sherlock) {
     // Payment Verified = Trust Signal (+15)
     if (sherlock.clientPaymentVerified) {
       clientQuality += 15;
     } else {
-      clientQuality -= 10; // Unverified is a red flag
+      clientQuality -= 5; // Unverified is yellow flag, not red
     }
 
     // Total Spent (Higher = More Serious)
@@ -584,7 +584,7 @@ function calculateMultiScore(
   // ==========================================================================
   // 3. COMPETITION SCORE (0-100) - Lower competition = higher score
   // ==========================================================================
-  let competition = 70; // Base - assume moderate competition
+  let competition = 75; // Base - assume winnable
 
   if (sherlock) {
     // Connects Cost (Lower = Less Competition)
@@ -616,17 +616,23 @@ function calculateMultiScore(
     }
   }
 
-  competition = Math.max(0, Math.min(100, competition));
+  // Floor competition at 40 (even high-competition jobs are winnable with skill)
+  competition = Math.max(40, Math.min(100, competition));
 
   // ==========================================================================
   // 4. WIN LIKELIHOOD (Weighted Combination)
   // ==========================================================================
   // Weights: ClientQuality (40%) + Relevance (35%) + Competition (25%)
-  const winLikelihood = Math.round(
+  let winLikelihood = Math.round(
     clientQuality * 0.4 +
     relevance * 0.35 +
     competition * 0.25
   );
+
+  // Bonus for highly relevant jobs - excellent matches deserve a boost
+  if (relevance > 85) {
+    winLikelihood = Math.min(100, winLikelihood + 5);
+  }
 
   return {
     overall: winLikelihood,

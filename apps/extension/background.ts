@@ -1915,8 +1915,8 @@ async function refreshSingleJob(platform: string, jobUrl: string): Promise<Refre
         descLower.includes("access denied") ||
         descLength < 200;
 
-      // Success: valid content found
-      if (!isGarbagePage && descLength > 200 && scrapeResult?.title) {
+      // Success: valid content found (description is the critical data, title is optional)
+      if (!isGarbagePage && descLength > 200) {
         console.log(`[CAS] Valid content found on attempt ${attempt}`);
         break;
       }
@@ -1948,14 +1948,14 @@ async function refreshSingleJob(platform: string, jobUrl: string): Promise<Refre
       return { success: false, blocked: true, error: "Rate limited or access denied" };
     }
 
-    if (!scrapeResult.title || !scrapeResult.description) {
-      return { success: false, error: "Missing required fields after retries" };
+    if (!scrapeResult.description) {
+      return { success: false, error: "Missing description after retries" };
     }
 
-    // Send refreshed data to server
+    // Send refreshed data to server (title may be empty, server will handle fallback)
     socket?.emit("DATA_INGEST", {
       platform,
-      title: scrapeResult.title,
+      title: scrapeResult.title || "Untitled Job",
       description: scrapeResult.description,
       url: jobUrl,
       budget: scrapeResult.budget,
@@ -2159,8 +2159,8 @@ function scrapeJobDetailPage(): JobDetailResult | null {
     // === VERIFIED SELECTORS FROM DOM CAPTURE ANALYSIS (Jan 15, 2026) ===
     // These are the EXACT data-test attributes found on live Upwork job detail pages
     const DETAIL_SELECTORS = {
-      // Main content
-      title: '[data-test="job-title"], h1.job-title, header h1, h1',
+      // Main content - expanded title selectors for better coverage
+      title: '[data-test="job-title"], [data-test="JobTitle"], h1.job-title, header h1, h1[class*="title"], .job-title-text, [class*="job-title"], h1',
       description: '[data-test="Description"], .job-details-content, [data-test="job-description"]',
 
       // Job details sidebar
@@ -2280,10 +2280,22 @@ function scrapeJobDetailPage(): JobDetailResult | null {
       return match ? parseInt(match[1], 10) : undefined;
     };
 
-    // Extract title using verified selectors
+    // Extract title using loop-based approach (like description) for better coverage
     console.log(`[CAS Detail Scraper ${VERSION}] Extracting title...`);
-    const title = getText(DETAIL_SELECTORS.title);
-    console.log(`[CAS Detail Scraper ${VERSION}] Title found:`, title?.slice(0, 50));
+    const titleSelectors = DETAIL_SELECTORS.title.split(', ');
+    let title = "";
+    for (const sel of titleSelectors) {
+      try {
+        const el = document.querySelector(sel.trim());
+        const text = el?.textContent?.trim() || "";
+        // Use longest title found (but cap at 500 chars to avoid garbage)
+        if (text.length > title.length && text.length < 500) {
+          title = text;
+          console.log(`[CAS Detail Scraper ${VERSION}] Found title from "${sel}": ${text.length} chars`);
+        }
+      } catch { /* invalid selector */ }
+    }
+    console.log(`[CAS Detail Scraper ${VERSION}] Final title:`, title?.slice(0, 50));
 
   // Try to expand "Read more" / "Show more" buttons to get full description
   console.log(`[CAS Detail Scraper ${VERSION}] Looking for expand buttons...`);
